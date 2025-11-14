@@ -79,17 +79,17 @@ curl --connect-timeout 10 --retry 5 -sL https://github.com/kubernetes-sigs/metri
 
 if [[ ${KNATIVE_REPO} == client ]]
 then
-    create_registry_secrets_in_serving &> /dev/null
-    install_contour &> /dev/null
+    create_registry_secrets_in_serving
+    install_contour 
 elif [[ ${KNATIVE_REPO} == operator ]]
 then
-    install_contour &> /dev/null
+    install_contour 
 elif [[ ${KNATIVE_REPO} == serving ]]
 then
-    create_registry_secrets_in_serving &> /dev/null
+    create_registry_secrets_in_serving 
 elif [[ ${KNATIVE_REPO} =~ kn-plugin-event ]]
 then
-    create_registry_secrets_in_serving &> /dev/null
+    create_registry_secrets_in_serving 
 fi
 
 echo "Cluster setup successfully"
