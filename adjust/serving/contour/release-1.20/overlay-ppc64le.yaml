@@ -24,10 +24,10 @@ spec:
       volumes:
         - name: registry-creds
           secret:
-            secretName: registry-creds # pragma: allowlist secret
+            secretName: registry-creds #! pragma: allowlist secret
         - name: registry-certs
           secret:
-            secretName: registry-certs # pragma: allowlist secret
+            secretName: registry-certs #! pragma: allowlist secret
 
 #@overlay/match by=subset("Job", "", "contour-internal"), expects=1
 #@overlay/match-child-defaults missing_ok=True
@@ -50,12 +50,12 @@ spec:
       name: http
       protocol: TCP
       targetPort: 8080
-      nodePort: 9470
+      #! nodePort: 9470
     - port: 443
       name: https
       protocol: TCP
       targetPort: 8443
-      nodePort: 9475
+      #! nodePort: 9475
   #@overlay/replace
   type: NodePort
 
