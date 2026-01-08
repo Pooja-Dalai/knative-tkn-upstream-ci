@@ -24,10 +24,10 @@ spec:
       volumes:
         - name: registry-creds
           secret:
-            secretName: registry-creds # pragma: allowlist secret
+            secretName: registry-creds #! pragma: allowlist secret
         - name: registry-certs
           secret:
-            secretName: registry-certs # pragma: allowlist secret
+            secretName: registry-certs #! pragma: allowlist secret
 
 #@overlay/match by=subset("Job", "", "contour-internal"), expects=1
 #@overlay/match-child-defaults missing_ok=True
