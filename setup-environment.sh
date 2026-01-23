@@ -27,6 +27,10 @@ then
     exit 1
 fi
 
+# Use multi-arch Istio images (fix ImagePullBackOff on ppc64le)
+export ISTIO_HUB=icr.io/istio
+export ISTIO_TAG=1.28.0
+
 if [[ ${DEBUG} == false ]]
 then
 while IFS= read -r line; do
@@ -68,6 +72,7 @@ install_contour(){
     kubectl apply -f https://raw.githubusercontent.com/knative/serving/main/third_party/contour-latest/net-contour.yaml
     echo "Waiting until all pods under contour-external are ready..."
     kubectl wait --timeout=15m pod --for=condition=Ready -n contour-external -l '!job-name'
+    kubectl wait --for=condition=Available deploy --all -n contour-external --timeout=10m || true
 }
 
 #------------------------
@@ -75,6 +80,9 @@ install_contour(){
 echo "Cluster setup started for Knative"
 
 kubectl create ns knative-serving
+# Allow scheduling on control-plane for CI/debug clusters
+kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+
 curl --connect-timeout 10 --retry 5 -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml | sed '/.*--metric-resolution.*/a\        - --kubelet-insecure-tls' | kubectl apply -f -
 
 if [[ ${KNATIVE_REPO} == client ]]
@@ -87,6 +95,7 @@ then
 elif [[ ${KNATIVE_REPO} == serving ]]
 then
     create_registry_secrets_in_serving &> /dev/null
+    install_contour
 elif [[ ${KNATIVE_REPO} =~ kn-plugin-event ]]
 then
     create_registry_secrets_in_serving &> /dev/null
@@ -95,7 +104,18 @@ fi
 echo "Cluster setup successfully"
 
 # Copy adjustment scripts 
-cp adjust/${KNATIVE_REPO}/${KNATIVE_RELEASE}/* /tmp/
+#cp adjust/${KNATIVE_REPO}/${KNATIVE_RELEASE}/* /tmp/
+
+
+echo "Contents of /tmp BEFORE copy:"
+ls -l /tmp
+
+echo "Copying adjustment scripts..."
+cp adjust/${KNATIVE_REPO}/contour/${KNATIVE_RELEASE}/* /tmp/
+
+echo "Contents of /tmp AFTER copy:"
+ls -l /tmp
+
 
 chmod +x /tmp/adjust.sh
 
