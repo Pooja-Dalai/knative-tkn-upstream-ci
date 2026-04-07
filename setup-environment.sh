@@ -94,6 +94,10 @@ fi
 
 echo "Cluster setup successfully"
 
+echo "===== Kubernetes Node Details ====="
+kubectl get nodes -o wide
+echo "==================================="
+
 # Copy adjustment scripts 
 cp adjust/${KNATIVE_REPO}/${KNATIVE_RELEASE}/* /tmp/
 
