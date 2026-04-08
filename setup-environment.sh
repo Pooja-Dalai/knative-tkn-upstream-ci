@@ -42,6 +42,7 @@ done < "$1"
 fi
 
 create_registry_secrets_in_serving(){
+    echo "Executing create_registry_secrets_in_serving fun"
     kubectl -n knative-serving create secret generic registry-creds --from-file=config.json=/root/.docker/config.json
     kubectl -n knative-serving create secret generic registry-certs --from-file=ssl.crt=/etc/ssl/certs/ca-certificates.crt
 }
@@ -86,7 +87,7 @@ then
     install_contour &> /dev/null
 elif [[ ${KNATIVE_REPO} == serving ]]
 then
-    create_registry_secrets_in_serving &> /dev/null
+    create_registry_secrets_in_serving 
 elif [[ ${KNATIVE_REPO} =~ kn-plugin-event ]]
 then
     create_registry_secrets_in_serving &> /dev/null
