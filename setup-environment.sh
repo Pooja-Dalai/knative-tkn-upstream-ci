@@ -41,10 +41,24 @@ while IFS= read -r line; do
 done < "$1"
 fi
 
+#create_registry_secrets_in_serving(){
+#    kubectl -n knative-serving create secret generic registry-creds --from-file=config.json=/root/.docker/config.json
+#    kubectl -n knative-serving create secret generic registry-certs --from-file=ssl.crt=/etc/ssl/certs/ca-certificates.crt
+#}
+
 create_registry_secrets_in_serving(){
     echo "Executing create_registry_secrets_in_serving fun"
-    kubectl -n knative-serving create secret generic registry-creds --from-file=config.json=/root/.docker/config.json
-    kubectl -n knative-serving create secret generic registry-certs --from-file=ssl.crt=/etc/ssl/certs/ca-certificates.crt
+
+    # Use SYSTEM_NAMESPACE if set, else fallback to knative-serving
+    NS="${SYSTEM_NAMESPACE:-knative-serving}"
+
+    echo "Using namespace: $NS"
+
+    kubectl -n "$NS" create secret generic registry-creds \
+        --from-file=config.json=/root/.docker/config.json
+
+    kubectl -n "$NS" create secret generic registry-certs \
+        --from-file=ssl.crt=/etc/ssl/certs/ca-certificates.crt
 }
 
 install_contour(){
