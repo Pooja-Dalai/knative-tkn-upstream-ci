@@ -15,3 +15,41 @@ sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-repli
 
 #Place overlay
 cp /tmp/overlay-ppc64le.yaml test/config/ytt/core/overlay-ppc64le.yaml
+
+echo ">>> Adjusting Knative control plane..."
+
+# Delete HPA autoscaler if present (avoid conflicts)
+kubectl delete deployment autoscaler-hpa -n knative-serving --ignore-not-found=true
+kubectl delete service autoscaler-hpa -n knative-serving --ignore-not-found=true
+
+# Scale activator to 1 (avoid overloading small clusters)
+kubectl scale deployment activator \
+  --replicas=1 \
+  -n knative-serving \
+  --ignore-not-found=true || true
+
+# Scale controller components (optional but stabilizes CI)
+kubectl scale deployment controller \
+  --replicas=1 \
+  -n knative-serving \
+  --ignore-not-found=true || true
+
+kubectl scale deployment webhook \
+  --replicas=1 \
+  -n knative-serving \
+  --ignore-not-found=true || true
+
+# Patch config-autoscaler (disable aggressive scaling)
+kubectl patch configmap config-autoscaler \
+  -n knative-serving \
+  --type merge \
+  -p '{
+    "data": {
+      "min-scale": "1",
+      "max-scale": "3",
+      "initial-scale": "1",
+      "scale-down-delay": "0s"
+    }
+  }' || true
+
+echo ">>> Adjustments completed"
