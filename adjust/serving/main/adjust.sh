@@ -13,37 +13,40 @@ sed -i "s/^\(parallelism=\).*/\1\"-parallel 1\"/" test/e2e-tests.sh
 # Set the number of replicas to 1 for stable test results
 sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-replicas.yaml
 
-#Place overlay
-cp /tmp/overlay-ppc64le.yaml test/config/ytt/core/overlay-ppc64le.yaml
 
-echo ">>> Adjusting Knative control plane..."
-
-sed -i '/serving post-install config/a \
-echo ">>> [1] Starting post-install cluster stabilization..." ; sleep 2 ; \
-echo ">>> [2] Deleting autoscaler-hpa..." ; sleep 2 ; \
-kubectl delete deployment autoscaler-hpa -n knative-serving --ignore-not-found=true || true ; \
-kubectl delete service autoscaler-hpa -n knative-serving --ignore-not-found=true || true ; \
-echo ">>> [3] Scaling control plane components..." ; sleep 2 ; \
-kubectl scale deployment activator -n knative-serving --replicas=1 || true ; \
-kubectl scale deployment controller -n knative-serving --replicas=1 || true ; \
-kubectl scale deployment webhook -n knative-serving --replicas=1 || true ; \
-echo ">>> [4] Patching autoscaler config..." ; sleep 2 ; \
-kubectl patch configmap config-autoscaler -n knative-serving --type merge -p "{\"data\":{\"min-scale\":\"1\",\"max-scale\":\"3\",\"initial-scale\":\"1\",\"scale-down-delay\":\"0s\"}}" || true ; \
-echo ">>> [5] Waiting for kourier-system namespace..." ; sleep 2 ; \
+# Inject post-install Kourier wait + fixes before tests
+sed -i '/setup_ingress_env_vars/a \
+echo ">>> [1] Knative installed. Starting Kourier readiness checks..." ; sleep 2 ; \
+echo ">>> [2] Waiting for kourier-system namespace..." ; sleep 2 ; \
 until kubectl get ns kourier-system >/dev/null 2>&1; do \
   echo ">>>     still waiting for namespace..." ; sleep 2 ; \
 done ; \
-echo ">>> [6] Waiting for Kourier deployment..." ; sleep 2 ; \
+echo ">>> [3] Waiting for Kourier deployment..." ; sleep 2 ; \
 kubectl wait --for=condition=available deploy/kourier -n kourier-system --timeout=180s || true ; \
-echo ">>> [7] Waiting for Kourier endpoints..." ; sleep 2 ; \
+echo ">>> [4] Waiting for Kourier endpoints..." ; sleep 2 ; \
 until kubectl get endpoints -n kourier-system kourier -o jsonpath=\"{.subsets[0].addresses[0].ip}\" >/dev/null 2>&1; do \
   echo ">>>     waiting for endpoints..." ; sleep 2 ; \
 done ; \
-echo ">>> [8] Starting Kourier port-forward..." ; sleep 2 ; \
+echo ">>> [5] Kourier ready. Applying cluster fixes..." ; sleep 2 ; \
+echo ">>> [6] Deleting autoscaler-hpa..." ; sleep 2 ; \
+kubectl delete deployment autoscaler-hpa -n knative-serving --ignore-not-found=true || true ; \
+kubectl delete service autoscaler-hpa -n knative-serving --ignore-not-found=true || true ; \
+echo ">>> [7] Deleting activator..." ; sleep 2 ; \
+kubectl delete deployment activator -n knative-serving --ignore-not-found=true || true ; \
+echo ">>> [8] Scaling controller + webhook..." ; sleep 2 ; \
+kubectl scale deployment controller -n knative-serving --replicas=1 || true ; \
+kubectl scale deployment webhook -n knative-serving --replicas=1 || true ; \
+echo ">>> [9] Patching autoscaler config..." ; sleep 2 ; \
+kubectl patch configmap config-autoscaler -n knative-serving --type merge -p "{\"data\":{\"min-scale\":\"1\",\"max-scale\":\"3\",\"initial-scale\":\"1\",\"scale-down-delay\":\"0s\"}}" || true ; \
+echo ">>> [10] Starting Kourier port-forward..." ; sleep 2 ; \
 ( while true; do \
     kubectl port-forward -n kourier-system service/kourier 80:80 443:443 30080:80 30443:443 >> /tmp/kourier-pf.log 2>&1 || true ; \
     echo ">>> port-forward died, restarting..." >> /tmp/kourier-pf.log ; \
     sleep 2 ; \
   done ) & \
-echo ">>> [9] Post-install cluster stabilization completed" ; sleep 2 \
-' test/e2e-tests.sh
+echo ">>> [11] Cluster ready. Proceeding to tests..." ; sleep 2 \
+' test/e2e-common.sh
+
+#Place overlay
+cp /tmp/overlay-ppc64le.yaml test/config/ytt/core/overlay-ppc64le.yaml
+
