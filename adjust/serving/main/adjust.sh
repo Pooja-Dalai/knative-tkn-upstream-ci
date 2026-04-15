@@ -50,15 +50,19 @@ kubectl patch configmap config-autoscaler -n knative-serving \
   --type merge \
   -p '{"data":{"min-scale":"1","max-scale":"3","initial-scale":"1","scale-down-delay":"0s"}}' || true
 
-echo ">>> Starting Kourier port-forward..."
+# =========================
+# FIXED PORT FORWARD (CLEAN)
+# =========================
+echo ">>> Starting Kourier port-forward (NodePort aligned)..."
+
 ( while true; do
   kubectl port-forward -n kourier-system service/kourier \
-    80:80 443:443 30080:80 30443:443 >> /tmp/kourier-pf.log 2>&1 || true
-  echo ">>> restarting port-forward..." >> /tmp/kourier-pf.log
+    31470:80 \
+    31475:443 >> /tmp/kourier-pf.log 2>&1 || true
+
+  echo ">>> port-forward restarted" >> /tmp/kourier-pf.log
   sleep 2
 done ) &
-
-echo ">>> [PATCH DONE]"
 EOF
 
 chmod +x /tmp/post-install-fix.sh
