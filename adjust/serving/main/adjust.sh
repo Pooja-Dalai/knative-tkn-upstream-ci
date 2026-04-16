@@ -39,16 +39,9 @@ done
 
 echo ">>> Applying cluster fixes..."
 
-kubectl delete deployment autoscaler-hpa -n knative-serving --ignore-not-found=true || true
-kubectl delete service autoscaler-hpa -n knative-serving --ignore-not-found=true || true
-
-kubectl scale deployment activator -n knative-serving --replicas=1 || true
-kubectl scale deployment controller -n knative-serving --replicas=1 || true
-kubectl scale deployment webhook -n knative-serving --replicas=1 || true
-
-kubectl patch configmap config-autoscaler -n knative-serving \
-  --type merge \
-  -p '{"data":{"min-scale":"1","max-scale":"3","initial-scale":"1","scale-down-delay":"0s"}}' || true
+kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
+kubectl delete hpa activator -n knative-serving --ignore-not-found || true
+kubectl scale deployment activator --replicas=1 -n knative-serving || true
 
 # =========================
 # FIXED PORT FORWARD (CLEAN)
