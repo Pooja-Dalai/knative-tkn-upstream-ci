@@ -50,7 +50,7 @@ index 3d9a51c46..23b70feb9 100644
 EOF
 
 # Apply patch safely
-cd /go/src/github.com/knative/eventing || exit 1
+cd /go/src/github.com/knative/serving || exit 1
 
 patch -p1 < /tmp/fix_test.patch || echo ">>> Patch may already be applied, continuing..."
 
