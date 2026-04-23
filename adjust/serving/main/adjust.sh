@@ -18,51 +18,27 @@ sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-repli
 # =========================
 echo ">>> Applying patch: skip external_address when loopback..."
 
-cat <<'EOF' > /tmp/fix_test.patch
-diff --git a/test/e2e/service_to_service_test.go b/test/e2e/service_to_service_test.go
-index 3d9a51c46..23b70feb9 100644
---- a/test/e2e/service_to_service_test.go
-+++ b/test/e2e/service_to_service_test.go
-@@ -28,6 +28,7 @@ import (
- 	"testing"
+echo ">>> Injecting skip logic via sed (robust)..."
 
- 	netapi "knative.dev/networking/pkg/apis/networking"
-+	pkgTest "knative.dev/pkg/test"
- 	"knative.dev/pkg/test/logstream"
- 	"knative.dev/serving/pkg/apis/autoscaling"
- 	"knative.dev/serving/pkg/apis/serving"
-@@ -236,6 +237,16 @@ func TestCallToPublicService(t *testing.T) {
- 	for _, tc := range gatewayTestCases {
- 		t.Run(tc.name, func(t *testing.T) {
- 			t.Parallel()
-+
-+			// Skip external address test if IngressEndpoint is loopback
-+			if tc.accessibleExternally {
-+				ingressEndpoint := pkgTest.Flags.IngressEndpoint
-+				if strings.Contains(ingressEndpoint, "127.0.0.1") || strings.Contains(ingressEndpoint, "localhost") {
-+					t.Skip("Skipping external_address test because IngressEndpoint is loopback")
-+				}
-+			}
-+
- 			if !test.ServingFlags.DisableLogStream {
- 				cancel := logstream.Start(t)
- 				defer cancel()
-EOF
+# Add import if missing
+grep -q 'pkgTest "knative.dev/pkg/test"' test/e2e/service_to_service_test.go || \
+sed -i '/netapi "knative.dev\/networking\/pkg\/apis\/networking"/a \
+\tpkgTest "knative.dev/pkg/test"' test/e2e/service_to_service_test.go
 
-# Apply patch safely
-# ✅ IMPORTANT: go to serving repo before patch
-cd /home/prow/go/src/github.com/knative/serving || exit 1
+# Inject skip logic after t.Parallel()
+sed -i '/t.Parallel()/a \
+\t\t\t// Skip external address test if IngressEndpoint is loopback\
+\t\t\tif tc.accessibleExternally {\
+\t\t\t\tingressEndpoint := pkgTest.Flags.IngressEndpoint\
+\t\t\t\tif strings.Contains(ingressEndpoint, "127.0.0.1") || strings.Contains(ingressEndpoint, "localhost") {\
+\t\t\t\t\tt.Skip("Skipping external_address test because IngressEndpoint is loopback")\
+\t\t\t\t}\
+\t\t\t}' test/e2e/service_to_service_test.go
 
-# ✅ Apply patch strictly (fail if not applied)
-patch -p1 < /tmp/fix_test.patch || { echo "❌ Patch failed"; exit 1; }
-
-# ✅ Verify patch actually applied
-echo ">>> Verifying patch..."
+echo ">>> Verifying injection..."
 grep -n "Skipping external_address test" test/e2e/service_to_service_test.go || {
-  echo "❌ Patch NOT applied properly"
-  exit 1
+  echo "❌ Injection failed"; exit 1;
 }
-
 
 # =========================
 # Post-install script
