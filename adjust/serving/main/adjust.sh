@@ -50,9 +50,18 @@ index 3d9a51c46..23b70feb9 100644
 EOF
 
 # Apply patch safely
-#cd /go/src/github.com/knative/serving || exit 1
+# ✅ IMPORTANT: go to serving repo before patch
+cd /go/src/github.com/knative/serving || exit 1
 
-patch -p1 < /tmp/fix_test.patch || echo ">>> Patch may already be applied, continuing..."
+# ✅ Apply patch strictly (fail if not applied)
+patch -p1 < /tmp/fix_test.patch || { echo "❌ Patch failed"; exit 1; }
+
+# ✅ Verify patch actually applied
+echo ">>> Verifying patch..."
+grep -n "Skipping external_address test" test/e2e/service_to_service_test.go || {
+  echo "❌ Patch NOT applied properly"
+  exit 1
+}
 
 
 # =========================
