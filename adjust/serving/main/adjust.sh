@@ -51,7 +51,7 @@ EOF
 
 # Apply patch safely
 # ✅ IMPORTANT: go to serving repo before patch
-cd /go/src/github.com/knative/serving || exit 1
+cd /home/prow/go/src/github.com/knative/serving || exit 1
 
 # ✅ Apply patch strictly (fail if not applied)
 patch -p1 < /tmp/fix_test.patch || { echo "❌ Patch failed"; exit 1; }
