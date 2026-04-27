@@ -16,31 +16,30 @@ sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-repli
 # =========================
 # Apply test patch (loopback fix)
 # =========================
-echo ">>> Applying patch: skip external_address when loopback..."
+echo ">>> Applying loopback patch via git apply..."
 
-echo ">>> Injecting skip logic via sed (robust)..."
-grep -q '"strings"' test/e2e/service_to_service_test.go || \
-sed -i '/import (/a \
-\t"strings"' test/e2e/service_to_service_test.go
+PATCH_FILE="$(dirname "$0")/skip-loopback.patch"
 
-# Add import if missing
-grep -q 'pkgTest "knative.dev/pkg/test"' test/e2e/service_to_service_test.go || \
-sed -i '/netapi "knative.dev\/networking\/pkg\/apis\/networking"/a \
-\tpkgTest "knative.dev/pkg/test"' test/e2e/service_to_service_test.go
+if [ ! -f "$PATCH_FILE" ]; then
+  echo "❌ Patch file not found: $PATCH_FILE"
+  exit 1
+fi
 
-# SAFE injection (no tc usage)
-sed -i '/t.Parallel()/a \
-\t\t// Skip external tests if IngressEndpoint is loopback\
-\t\tingressEndpoint := pkgTest.Flags.IngressEndpoint\
-\t\tif strings.Contains(ingressEndpoint, "127.0.0.1") || strings.Contains(ingressEndpoint, "localhost") {\
-\t\t\tt.Skip("Skipping test because IngressEndpoint is loopback")\
-\t\t}' test/e2e/service_to_service_test.go
-
-echo ">>> Verifying injection..."
-grep -n "Skipping external_address test" test/e2e/service_to_service_test.go || {
-  echo "❌ Injection failed"; exit 1;
+# Apply patch (safe mode)
+git apply --check "$PATCH_FILE" || {
+  echo "⚠️ Patch may already be applied or has minor conflicts, trying fallback..."
 }
 
+git apply "$PATCH_FILE" || {
+  echo "❌ Patch failed to apply"
+  exit 1
+}
+
+echo ">>> Verifying patch..."
+grep -n "IngressEndpoint is loopback" test/e2e/service_to_service_test.go || {
+  echo "❌ Patch verification failed"
+  exit 1
+}
 # =========================
 # Post-install script
 # =========================
