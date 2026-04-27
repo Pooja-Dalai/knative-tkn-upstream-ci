@@ -18,28 +18,15 @@ sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-repli
 # =========================
 echo ">>> Applying loopback patch via git apply..."
 
-PATCH_FILE="$(dirname "$0")/skip-loopback.patch"
+PATCH_FILE="/tmp/skip-loopback.patch"
 
 if [ ! -f "$PATCH_FILE" ]; then
   echo "❌ Patch file not found: $PATCH_FILE"
+  ls -l /tmp
   exit 1
 fi
 
-# Apply patch (safe mode)
-git apply --check "$PATCH_FILE" || {
-  echo "⚠️ Patch may already be applied or has minor conflicts, trying fallback..."
-}
-
-git apply "$PATCH_FILE" || {
-  echo "❌ Patch failed to apply"
-  exit 1
-}
-
-echo ">>> Verifying patch..."
-grep -n "IngressEndpoint is loopback" test/e2e/service_to_service_test.go || {
-  echo "❌ Patch verification failed"
-  exit 1
-}
+git apply "$PATCH_FILE"
 # =========================
 # Post-install script
 # =========================
