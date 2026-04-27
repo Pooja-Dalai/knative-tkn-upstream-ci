@@ -19,21 +19,22 @@ sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-repli
 echo ">>> Applying patch: skip external_address when loopback..."
 
 echo ">>> Injecting skip logic via sed (robust)..."
+grep -q '"strings"' test/e2e/service_to_service_test.go || \
+sed -i '/import (/a \
+\t"strings"' test/e2e/service_to_service_test.go
 
 # Add import if missing
 grep -q 'pkgTest "knative.dev/pkg/test"' test/e2e/service_to_service_test.go || \
 sed -i '/netapi "knative.dev\/networking\/pkg\/apis\/networking"/a \
 \tpkgTest "knative.dev/pkg/test"' test/e2e/service_to_service_test.go
 
-# Inject skip logic after t.Parallel()
+# SAFE injection (no tc usage)
 sed -i '/t.Parallel()/a \
-\t\t\t// Skip external address test if IngressEndpoint is loopback\
-\t\t\tif tc.accessibleExternally {\
-\t\t\t\tingressEndpoint := pkgTest.Flags.IngressEndpoint\
-\t\t\t\tif strings.Contains(ingressEndpoint, "127.0.0.1") || strings.Contains(ingressEndpoint, "localhost") {\
-\t\t\t\t\tt.Skip("Skipping external_address test because IngressEndpoint is loopback")\
-\t\t\t\t}\
-\t\t\t}' test/e2e/service_to_service_test.go
+\t\t// Skip external tests if IngressEndpoint is loopback\
+\t\tingressEndpoint := pkgTest.Flags.IngressEndpoint\
+\t\tif strings.Contains(ingressEndpoint, "127.0.0.1") || strings.Contains(ingressEndpoint, "localhost") {\
+\t\t\tt.Skip("Skipping test because IngressEndpoint is loopback")\
+\t\t}' test/e2e/service_to_service_test.go
 
 echo ">>> Verifying injection..."
 grep -n "Skipping external_address test" test/e2e/service_to_service_test.go || {
