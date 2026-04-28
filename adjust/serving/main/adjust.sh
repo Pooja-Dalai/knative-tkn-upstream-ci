@@ -34,16 +34,44 @@ cat << 'EOF' > /tmp/post-install-fix.sh
 #!/bin/bash
 
 echo ">>> [PATCH] Starting post-install setup..."
-kubectl wait --for=condition=Ready pod -l app=controller -n knative-serving --timeout=300s || true
-kubectl wait --for=condition=Ready pod -l app=autoscaler -n knative-serving --timeout=300s || true
-kubectl wait --for=condition=Ready pod -l app=activator -n knative-serving --timeout=300s || true
+
+echo ">>> Waiting for kourier-system namespace..."
+until kubectl get ns kourier-system >/dev/null 2>&1; do
+  echo ">>> still waiting..."
+  sleep 2
+done
+
+echo ">>> Waiting for Kourier deployment..."
+kubectl wait --for=condition=available deploy/kourier -n kourier-system --timeout=180s || true
+
+echo ">>> Waiting for Kourier endpoints..."
+until kubectl get endpoints -n kourier-system kourier -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null 2>&1; do
+  echo ">>> waiting for endpoints..."
+  sleep 2
+done
+
+echo ">>> Waiting for webhook endpoints..."
+
+until kubectl get endpoints webhook -n knative-serving -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null 2>&1; do
+  echo ">>> waiting for webhook endpoints..."
+  sleep 2
+done
+
+echo ">>> Waiting for webhook to be ready..."
+
+kubectl rollout status deployment/webhook -n knative-serving --timeout=300s
+
+kubectl wait --for=condition=Ready pod \
+  -l app=webhook \
+  -n knative-serving \
+  --timeout=300s
 
 echo ">>> Applying cluster fixes..."
 
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
-#kubectl scale deployment activator --replicas=1 -n knative-serving || true
-kubectl scale deployment activator --replicas=2 -n knative-serving || true
+kubectl scale deployment activator --replicas=1 -n knative-serving || true
+
 # =========================
 # FIXED PORT FORWARD (CLEAN)
 # =========================
