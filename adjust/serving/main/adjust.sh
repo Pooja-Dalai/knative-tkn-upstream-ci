@@ -34,12 +34,16 @@ cat << 'EOF' > /tmp/post-install-fix.sh
 #!/bin/bash
 
 echo ">>> [PATCH] Starting post-install setup..."
+kubectl wait --for=condition=Ready pod -l app=controller -n knative-serving --timeout=300s || true
+kubectl wait --for=condition=Ready pod -l app=autoscaler -n knative-serving --timeout=300s || true
+kubectl wait --for=condition=Ready pod -l app=activator -n knative-serving --timeout=300s || true
+
 echo ">>> Applying cluster fixes..."
 
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
-kubectl scale deployment activator --replicas=1 -n knative-serving || true
-
+#kubectl scale deployment activator --replicas=1 -n knative-serving || true
+kubectl scale deployment activator --replicas=2 -n knative-serving || true
 # =========================
 # FIXED PORT FORWARD (CLEAN)
 # =========================
