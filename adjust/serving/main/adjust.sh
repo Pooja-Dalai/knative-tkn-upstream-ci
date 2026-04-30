@@ -72,6 +72,30 @@ kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || tru
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
 kubectl scale deployment activator --replicas=1 -n knative-serving || true
 
+echo ">>> Waiting for Knative core components..."
+
+kubectl rollout status deployment/controller -n knative-serving --timeout=300s
+kubectl rollout status deployment/autoscaler -n knative-serving --timeout=300s
+kubectl rollout status deployment/activator -n knative-serving --timeout=300s
+
+kubectl wait --for=condition=Ready pod \
+  -l app=controller \
+  -n knative-serving \
+  --timeout=300s
+
+kubectl wait --for=condition=Ready pod \
+  -l app=autoscaler \
+  -n knative-serving \
+  --timeout=300s
+
+kubectl wait --for=condition=Ready pod \
+  -l app=activator \
+  -n knative-serving \
+  --timeout=300s
+
+echo ">>> Giving system time to stabilize..."
+sleep 20
+
 # =========================
 # FIXED PORT FORWARD (CLEAN)
 # =========================
@@ -94,8 +118,8 @@ chmod +x /tmp/post-install-fix.sh
 # Inject AFTER install
 # =========================
 sed -i '/setup_ingress_env_vars/a \
-echo ">>> Running post-install fix in background..." ; \
-/tmp/post-install-fix.sh & \
+echo ">>> Running post-install" ; \
+/tmp/post-install-fix.sh \
 ' test/e2e-common.sh
 
 
