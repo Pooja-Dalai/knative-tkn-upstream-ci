@@ -70,6 +70,9 @@ echo ">>> Applying cluster fixes..."
 
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
+# NEW
+kubectl delete hpa --all -n knative-serving --ignore-not-found || true
+kubectl delete deployment autoscaler-hpa -n knative-serving --ignore-not-found || true
 kubectl scale deployment activator --replicas=1 -n knative-serving || true
 
 echo ">>> Waiting for Knative core components..."
