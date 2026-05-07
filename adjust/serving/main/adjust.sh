@@ -69,10 +69,13 @@ kubectl wait --for=condition=Ready pod \
 echo ">>> Applying cluster fixes..."
 
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
+#kubectl delete hpa activator -n knative-serving --ignore-not-found || true
+# NEW — keeps autoscaler-hpa deployment, only removes HPAs
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
-# NEW
-kubectl delete hpa --all -n knative-serving --ignore-not-found || true
-kubectl delete deployment autoscaler-hpa -n knative-serving --ignore-not-found || true
+kubectl delete hpa webhook -n knative-serving --ignore-not-found || true
+# DO NOT delete autoscaler-hpa deployment — needed for HPA tests
+# DO NOT delete hpa for autoscaler-hpa — needed for HA HPA test
+kubectl scale deployment activator --replicas=1 -n knative-serving || true
 kubectl scale deployment activator --replicas=2 -n knative-serving || true
 
 echo ">>> Waiting for Knative core components..."
