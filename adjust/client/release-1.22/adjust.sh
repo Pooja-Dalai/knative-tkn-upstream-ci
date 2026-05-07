@@ -10,6 +10,9 @@ sed -i "s/\(go_test_e2e.*\)timeout=45m\(.*\).*/\1timeout=90m\2/g" test/e2e-tests
 
 sed -i "/sleep.*/a\  ${cmd_line}" test/e2e-tests.sh
 
+# Fix port mismatch: helloworld image listens on 8080, not 8888; 8888 causes readiness failure and revision timeout in Knative e2e tests
+sed -i 's/--port 8888/--port 8080/g' test/e2e/basic_workflow_test.go test/e2e/revision_test.go
+
 # patch serving deployment for accessing private registry
 # https://knative.dev/docs/serving/tag-resolution/#custom-certificates
 cmd="kubectl set env deployment/controller -n knative-serving DOCKER_CONFIG=/.docker && kubectl patch cm config-deployment -n knative-serving --type json --patch '[{ \"op\": \"add\", \"path\": \"/data/registriesSkippingTagResolving\", \"value\": \"icr.io\" }]'"
