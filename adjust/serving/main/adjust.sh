@@ -42,7 +42,10 @@ until kubectl get ns kourier-system >/dev/null 2>&1; do
 done
 
 echo ">>> Waiting for Kourier deployment..."
-kubectl wait --for=condition=available deploy/kourier -n kourier-system --timeout=180s || true
+kubectl wait --for=condition=available \
+  deploy/3scale-kourier-gateway \
+  -n kourier-system \
+  --timeout=300s || true
 
 echo ">>> Waiting for Kourier endpoints..."
 until kubectl get endpoints -n kourier-system kourier -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null 2>&1; do
@@ -69,13 +72,8 @@ kubectl wait --for=condition=Ready pod \
 echo ">>> Applying cluster fixes..."
 
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
-#kubectl delete hpa activator -n knative-serving --ignore-not-found || true
-# NEW — keeps autoscaler-hpa deployment, only removes HPAs
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
 kubectl delete hpa webhook -n knative-serving --ignore-not-found || true
-# DO NOT delete autoscaler-hpa deployment — needed for HPA tests
-# DO NOT delete hpa for autoscaler-hpa — needed for HA HPA test
-kubectl scale deployment activator --replicas=1 -n knative-serving || true
 kubectl scale deployment activator --replicas=2 -n knative-serving || true
 
 echo ">>> Waiting for Knative core components..."
@@ -99,8 +97,17 @@ kubectl wait --for=condition=Ready pod \
   -n knative-serving \
   --timeout=300s
 
+kubectl rollout status deployment/3scale-kourier-gateway \
+  -n kourier-system \
+  --timeout=300s
+
+kubectl wait --for=condition=Ready pod \
+  -l app=3scale-kourier-gateway \
+  -n kourier-system \
+  --timeout=300s || true
+
 echo ">>> Giving system time to stabilize..."
-sleep 20
+sleep 60
 
 # =========================
 # FIXED PORT FORWARD (CLEAN)
