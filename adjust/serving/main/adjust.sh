@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 set -e
 
@@ -385,5 +384,3 @@ cp \
   test/config/ytt/core/overlay-ppc64le.yaml
 
 echo ">>> Knative Serving adjustments completed"
-```
-
