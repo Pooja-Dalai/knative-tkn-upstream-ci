@@ -1,4 +1,27 @@
 #!/bin/bash
+# ============================================================================
+# BASE VERSION — same tunnel mechanism as your original (kubectl port-forward)
+# but with two fixes:
+#   1. The sed injection into test/e2e-common.sh now only touches the FIRST
+#      match of the anchor line, using the `0,/pattern/{...}` range trick.
+#      Your original `/pattern/a\...` form inserts after EVERY match — if
+#      "setup_ingress_env_vars" appears both as a function def and a call
+#      site, you'd get the post-install-fix call injected twice, in the
+#      wrong place, which can break e2e-common.sh's control flow well before
+#      any test ever runs. That is a strong candidate for the
+#      ImagePullBackOff/kapp-timeout you just hit.
+#   2. Self-healing supervisor for the tunnel (active curl check, not just
+#      "restart if the process died").
+#
+# Use this to confirm: does the kapp-timeout/ImagePullBackOff go away once
+# the injection is fixed, with everything else unchanged? If yes, it was #1.
+# If it still happens, it's the registry issue we discussed, unrelated to
+# this script, and Option A / Option B (network topology) are moot until
+# that's resolved.
+# ============================================================================
+set -uo pipefail   # NOT -e: many of the kubectl/kill calls are expected to
+                    # fail intermittently and are already guarded with `|| true`
+
 # Export USER before test starts
 sed -i "/^source.*/a export USER=\$(whoami)" test/e2e-tests.sh
 sed -i "/^initialize.*/a export SHORT=1" test/e2e-tests.sh
@@ -9,12 +32,18 @@ sed -i 's/\(.*run_kapp deploy\)\(.*\)/\1 --wait-check-interval=45s --wait-concur
 # Reduce parallelism
 sed -i "s/^\(parallelism=\).*/\1\"-parallel 1\"/" test/e2e-tests.sh
 
-# --- CHANGED ---
-# Was: forced to 1 replica, making Kourier's Envoy gateway a single point of
-# failure for the ENTIRE e2e run (every test's traffic goes through one pod).
-# Now: keep 2 replicas so the gateway Service always has a healthy endpoint
-# for the port-forward tunnel to fail over to.
+# Kourier replicas: 2 (cheap insurance; not the primary fix, see prior discussion)
 sed -i 's/\(.*replicas: \).*/\12/' test/config/ytt/ingress/kourier/kourier-replicas.yaml
+
+# --- DIAGNOSTIC: how many times does the injection anchor appear? ---
+# This tells you, before anything else runs, whether the double-insertion
+# risk is real in your current checkout of test/e2e-common.sh.
+ANCHOR_COUNT=$(grep -c "setup_ingress_env_vars" test/e2e-common.sh || true)
+echo ">>> DIAGNOSTIC: 'setup_ingress_env_vars' appears ${ANCHOR_COUNT} time(s) in test/e2e-common.sh"
+if [[ "${ANCHOR_COUNT}" -gt 1 ]]; then
+  echo ">>> DIAGNOSTIC: multiple matches found — using range-restricted sed so"
+  echo ">>> only the FIRST match gets the injection (see below)."
+fi
 
 # Apply test patch (loopback fix)
 echo "Applying loopback patch"
@@ -31,20 +60,17 @@ cat << 'EOF' > /tmp/post-install-fix.sh
 set +e
 echo "Starting post-install setup..."
 
-# Wait for Kourier namespace and gateway deployment before starting tests.
 until kubectl get ns kourier-system >/dev/null 2>&1; do
   sleep 2
 done
 
 kubectl wait --for=condition=available deploy/3scale-kourier-gateway -n kourier-system --timeout=180s || true
 
-# Applying cluster fixes
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
 kubectl delete hpa webhook -n knative-serving --ignore-not-found || true
 kubectl scale deployment activator --replicas=2 -n knative-serving || true
 
-# Waiting for Knative core components
 kubectl rollout status deployment/controller -n knative-serving --timeout=300s || true
 kubectl rollout status deployment/autoscaler -n knative-serving --timeout=300s || true
 kubectl rollout status deployment/activator -n knative-serving --timeout=300s || true
@@ -52,7 +78,6 @@ kubectl rollout status deployment/activator -n knative-serving --timeout=300s ||
 echo "Giving system time to stabilize..."
 sleep 30
 
-# Cleanup old forwards before starting a new one
 echo ">>> Cleaning up old Kourier port-forwards..."
 if [[ -f /tmp/kourier-portforward.pid ]]; then
   OLD_PID=$(cat /tmp/kourier-portforward.pid)
@@ -64,23 +89,12 @@ fi
 pkill -f "port-forward.*kourier" 2>/dev/null || true
 sleep 2
 
-# --- CHANGED ---
-# Was: supervisor only restarted the tunnel when the kubectl process itself
-# exited. A tunnel that goes stale/stuck under load (very common with
-# kubectl port-forward, which is API-server-proxied and not built for
-# sustained/high-concurrency throughput) never got detected, so every test
-# hitting it during that window failed with "connection reset by peer" /
-# "context deadline exceeded" until the process eventually crashed on its own.
-# Now: an active curl-based health check runs every few seconds. If the
-# tunnel stops actually answering HTTP requests (not just "process alive"),
-# it's force-killed and restarted immediately, shrinking the outage window
-# from "however long until the process happens to die" to a few seconds.
 echo ">>> Starting Kourier port-forward supervisor (self-healing)..."
 (
   trap 'exit 0' TERM INT
 
-  HEALTH_INTERVAL=5     # seconds between health checks
-  MAX_FAILS=3           # consecutive failed checks before forcing a restart
+  HEALTH_INTERVAL=5
+  MAX_FAILS=3
   FAIL_COUNT=0
 
   start_pf() {
@@ -107,7 +121,6 @@ echo ">>> Starting Kourier port-forward supervisor (self-healing)..."
   while true; do
     sleep "${HEALTH_INTERVAL}"
 
-    # Is the tunnel process still alive?
     if [[ -z "${PF_CHILD}" ]] || ! kill -0 "${PF_CHILD}" 2>/dev/null; then
       echo ">>> $(date) port-forward process died, restarting" >> /tmp/kourier-pf.log
       wait_for_svc
@@ -116,9 +129,6 @@ echo ">>> Starting Kourier port-forward supervisor (self-healing)..."
       continue
     fi
 
-    # Active health check: does the tunnel actually serve traffic end-to-end?
-    # Any HTTP response (even 404) proves the local socket, the API-server
-    # proxy, and the Envoy pod behind it are all still working.
     CODE=$(curl -s -o /dev/null -m 3 -w "%{http_code}" http://127.0.0.1:31470/ 2>/dev/null)
     if [[ "${CODE}" =~ ^[0-9]+$ ]]; then
       FAIL_COUNT=0
@@ -144,8 +154,22 @@ echo ">>> Port-forward supervisor PID=${PF_PID}"
 EOF
 chmod +x /tmp/post-install-fix.sh
 
-# Run post-install fixes after ingress environment variables are configured
-sed -i '/setup_ingress_env_vars/a\echo ">>> Running post-install fixes..." ; /tmp/post-install-fix.sh' test/e2e-common.sh
+# --- FIXED: only insert after the FIRST match of the anchor line ---
+# `0,/pattern/{...}` means: process lines from the start of the file up to
+# (and including) the first line matching /pattern/, and only within that
+# range apply the `a\` (append). Any later occurrence of the same string
+# further down the file is left untouched.
+sed -i '0,/setup_ingress_env_vars/{/setup_ingress_env_vars/a\
+echo ">>> Running post-install fixes..." ; /tmp/post-install-fix.sh
+}' test/e2e-common.sh
+
+# --- DIAGNOSTIC: confirm exactly one injection landed ---
+INJECTED_COUNT=$(grep -c "Running post-install fixes" test/e2e-common.sh || true)
+echo ">>> DIAGNOSTIC: post-install-fix injected ${INJECTED_COUNT} time(s) into test/e2e-common.sh"
+if [[ "${INJECTED_COUNT}" -ne 1 ]]; then
+  echo "!!! WARNING: expected exactly 1 injection, found ${INJECTED_COUNT}." >&2
+  echo "!!! Inspect test/e2e-common.sh manually before trusting this run." >&2
+fi
 
 # Cleanup script
 cat <<'EOF' > /tmp/kourier-cleanup.sh
@@ -163,7 +187,6 @@ sleep 2
 EOF
 chmod +x /tmp/kourier-cleanup.sh
 
-# Cleanup on failure and success
 sed -i '/(( failed )) && fail_test/i\source /tmp/kourier-cleanup.sh' test/e2e-tests.sh
 sed -i '/^success$/i\source /tmp/kourier-cleanup.sh' test/e2e-tests.sh
 
