@@ -22,6 +22,63 @@
 set -uo pipefail   # NOT -e: many of the kubectl/kill calls are expected to
                     # fail intermittently and are already guarded with `|| true`
 
+# --- NEW: mitigate Go module proxy stream resets during the build/install
+# phase. Symptom seen: "stream error: stream ID ...; INTERNAL_ERROR;
+# received from peer" while downloading a module from proxy.golang.org,
+# during `INSTALLING KNATIVE SERVING` (building the kapp tool). This is the
+# same class of mid-stream network reset we've been chasing on the ingress
+# side, just hitting Go's HTTPS module fetches instead of Kourier traffic --
+# further evidence the network path out of this environment is generally
+# unreliable under sustained/multiplexed connections, not just for ingress.
+echo ">>> Forcing HTTP/1.1 for Go's module client (mitigates HTTP/2 stream resets)..."
+export GODEBUG="${GODEBUG:-}http2client=0"
+
+echo ">>> Pre-warming Go module cache with retries (absorbs transient network"
+echo ">>> blips here, before the uninterruptible kapp install step runs)..."
+for i in 1 2 3 4 5; do
+  if go mod download; then
+    echo ">>> go mod download succeeded on attempt ${i}"
+    break
+  fi
+  echo ">>> go mod download failed on attempt ${i}/5, retrying in 10s..." >&2
+  sleep 10
+done
+
+# --- NEW: pre-build kapp/ytt with retries, outside the uninterruptible
+# install step. Your log shows these are fetched via a separate
+# `go run <module>@<version>` invocation (own module resolution, not covered
+# by `go mod download` above), which is exactly where the x/text stream
+# reset happened. Building them here means: if it fails, it just retries in
+# a loop with backoff; if it fails during the real `kapp deploy` later,
+# there's no retry and the whole 30-minute wait-timeout gets burned for
+# nothing. Pin versions to match what your log showed — bump these if your
+# repo's pinned versions differ.
+KAPP_VERSION="${KAPP_VERSION:-v0.60.0}"
+YTT_VERSION="${YTT_VERSION:-v0.48.0}"
+
+prebuild_go_tool() {
+  local module_path="$1"
+  local label="$2"
+  local i
+  for i in 1 2 3 4 5; do
+    if go run "${module_path}" version >/dev/null 2>&1; then
+      echo ">>> ${label} pre-build succeeded on attempt ${i}"
+      return 0
+    fi
+    echo ">>> ${label} pre-build failed on attempt ${i}/5, retrying in 10s..." >&2
+    sleep 10
+  done
+  echo "!!! ${label} pre-build failed after 5 attempts. Proceeding anyway --" >&2
+  echo "!!! the real install step may hit the same network error." >&2
+  return 1
+}
+
+echo ">>> Pre-building kapp (${KAPP_VERSION}) with retries..."
+prebuild_go_tool "github.com/vmware-tanzu/carvel-kapp/cmd/kapp@${KAPP_VERSION}" "kapp"
+
+echo ">>> Pre-building ytt (${YTT_VERSION}) with retries..."
+prebuild_go_tool "carvel.dev/ytt/cmd/ytt@${YTT_VERSION}" "ytt"
+
 # Export USER before test starts
 sed -i "/^source.*/a export USER=\$(whoami)" test/e2e-tests.sh
 sed -i "/^initialize.*/a export SHORT=1" test/e2e-tests.sh
