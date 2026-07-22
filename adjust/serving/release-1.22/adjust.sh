@@ -65,20 +65,17 @@ fi
 git apply "$PATCH_FILE"
 
 # ---------------------------------------------------------------------------
-# Post-install cluster fixes -- kept flat (not wrapped in a function) to
-# match their style. These specific steps (kourier-ns wait, gateway wait,
-# webhook HPA cleanup, rollout status waits) predate any of our changes --
-# they were already in our original adjust.sh and are relevant to our
-# multi-node PowerVS cluster (slower to stabilize than their single-node
-# Kind setup), so they're kept rather than dropped for style parity alone.
+# Post-install cluster fixes, split by what they depend on:
+#   - chaosduck/HPA/activator-scale operate on the `knative-serving`
+#     namespace, which setup-environment.sh already created before this
+#     script runs -- safe to run synchronously, right now.
+#   - kourier-system namespace / gateway / rollout waits depend on resources
+#     that don't exist yet -- e2e-tests.sh hasn't run `kapp deploy` at this
+#     point in the pipeline. Waiting for them synchronously here hangs
+#     forever, since e2e-tests.sh (the thing that WOULD create them) can't
+#     run until this script returns. These now run in a background subshell
+#     instead, so adjust.sh returns immediately and e2e-tests.sh can proceed.
 # ---------------------------------------------------------------------------
-echo ">>> Running post-install fixes..."
-
-until kubectl get ns kourier-system >/dev/null 2>&1; do
-  sleep 2
-done
-kubectl wait --for=condition=available deploy/3scale-kourier-gateway -n kourier-system --timeout=180s || true
-
 echo ">>> Cleaning up chaosduck if present..."
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
 
@@ -91,12 +88,21 @@ kubectl delete hpa webhook -n knative-serving --ignore-not-found || true
 # choice rather than an accidental leftover.
 kubectl scale deployment activator --replicas=2 -n knative-serving || true
 
-kubectl rollout status deployment/controller -n knative-serving --timeout=300s || true
-kubectl rollout status deployment/autoscaler -n knative-serving --timeout=300s || true
-kubectl rollout status deployment/activator -n knative-serving --timeout=300s || true
+# Runs in the background -- waits for Kourier to actually exist (created
+# later by e2e-tests.sh) before doing anything, without blocking this script.
+(
+  until kubectl get ns kourier-system >/dev/null 2>&1; do
+    sleep 5
+  done
+  kubectl wait --for=condition=available deploy/3scale-kourier-gateway -n kourier-system --timeout=300s || true
 
-echo ">>> Giving system time to stabilize..."
-sleep 30
+  kubectl rollout status deployment/controller -n knative-serving --timeout=300s || true
+  kubectl rollout status deployment/autoscaler -n knative-serving --timeout=300s || true
+  kubectl rollout status deployment/activator -n knative-serving --timeout=300s || true
+
+  echo ">>> Post-install fixes (background) completed at $(date)" >> /tmp/post-install-fix.log
+) &
+echo ">>> Post-install background watcher started with PID: $!"
 
 # ---------------------------------------------------------------------------
 # PORT FORWARDING FUNCTIONS -- mirrors their logic exactly: restart on
