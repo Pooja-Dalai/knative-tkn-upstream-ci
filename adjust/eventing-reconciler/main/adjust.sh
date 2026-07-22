@@ -1,391 +1,536 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
-echo "=== Applying Eventing reconciler Prow adjustments ==="
+echo "============================================================"
+echo "Applying Eventing reconciler REKT fixes for ppc64le"
+echo "Repository: ${PWD}"
+echo "============================================================"
 
-# -------------------------------------------------------------------
-# Main Eventing e2e adjustments
-# -------------------------------------------------------------------
-
-echo "Merge conformance tests into the main e2e test script"
-
-if [[ ! -f test/e2e-conformance-tests.sh ]]; then
-  echo "ERROR: test/e2e-conformance-tests.sh not found" >&2
+fail() {
+  echo "ERROR: $*" >&2
   exit 1
-fi
+}
 
-if [[ ! -f test/e2e-tests.sh ]]; then
-  echo "ERROR: test/e2e-tests.sh not found" >&2
-  exit 1
-fi
+require_file() {
+  [[ -f "$1" ]] || fail "Required file not found: $1"
+}
 
-# Avoid inserting the conformance commands more than once.
-if ! grep -q "Merged conformance tests for ppc64le" test/e2e-tests.sh; then
-  linesofcode="$(
-    grep -A 100 'go_test_e2e' test/e2e-conformance-tests.sh \
-      | grep -v '^success' \
-      | tr '\n' ' '
-  )"
+###############################################################################
+# Required files
+###############################################################################
 
-  sed -i \
-    "/^success.*/i # Merged conformance tests for ppc64le\n${linesofcode}" \
-    test/e2e-tests.sh
-else
-  echo "Conformance tests are already merged"
-fi
+REKT_SCRIPT="test/e2e-rekt-tests.sh"
+E2E_COMMON="test/e2e-common.sh"
+REKT_EXECUTION="vendor/knative.dev/reconciler-test/pkg/environment/execution.go"
+TRIGGER_FEATURE="test/rekt/features/trigger/feature.go"
 
-echo "Set USER in test/e2e-tests.sh"
+require_file "${REKT_SCRIPT}"
+require_file "${E2E_COMMON}"
+require_file "${REKT_EXECUTION}"
 
-if ! grep -q '^export USER=' test/e2e-tests.sh; then
-  sed -i \
-    '/^source.*/a export USER=$(whoami)' \
-    test/e2e-tests.sh
-fi
+###############################################################################
+# Environment configuration
+###############################################################################
 
-echo "Set main e2e timeout and parallelism"
+# Make tools installed under GOPATH available.
+GOPATH_BIN="$(go env GOPATH)/bin"
+export PATH="${GOPATH_BIN}:${HOME}/go/bin:${PATH}"
 
-sed -i \
-  's/\(go_test_e2e.*\)timeout=1h\(.*\)/\1timeout=15m\2/g' \
-  test/e2e-tests.sh
+export USER="${USER:-$(whoami)}"
 
-sed -i \
-  's/\(go_test_e2e.*\)parallel=20\(.*\)/\1parallel=1\2/g' \
-  test/e2e-tests.sh
+# Registry used for PPC64LE test images.
+export KO_DOCKER_REPO="${KO_DOCKER_REPO:-icr.io/upstream-k8s-registry/knative}"
 
-echo "Use ppc64le-supported Zipkin image"
+# Force all ko builds to use PPC64LE.
+export KO_FLAGS="--platform=linux/ppc64le"
 
-MONITORING_FILE="test/config/monitoring/monitoring.yaml"
+# The Prow log showed that reconciler-test selected:
+#
+#   cgr.dev/chainguard/static:latest
+#
+# and failed with:
+#
+#   no matching platforms in base image index
+#
+# Force a base image that supports PPC64LE.
+export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 
-if [[ -f "${MONITORING_FILE}" ]]; then
-  sed -i \
-    's|image:.*|image: icr.io/upstream-k8s-registry/knative/openzipkin/zipkin:test|g' \
-    "${MONITORING_FILE}"
-else
-  echo "WARNING: ${MONITORING_FILE} not found" >&2
-fi
+export CGO_ENABLED=1
 
-# -------------------------------------------------------------------
-# Reconciler-test execution ordering
-# -------------------------------------------------------------------
+# Full rekt execution can take longer on Power.
+export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-3h}"
 
-echo "Patch reconciler-test setup ordering"
+echo "USER=${USER}"
+echo "GOARCH=$(go env GOARCH)"
+echo "KO_DOCKER_REPO=${KO_DOCKER_REPO}"
+echo "KO_FLAGS=${KO_FLAGS}"
+echo "KO_DEFAULTBASEIMAGE=${KO_DEFAULTBASEIMAGE}"
+echo "REKT_TEST_TIMEOUT=${REKT_TEST_TIMEOUT}"
 
-REKT_EXEC="${PWD}/vendor/knative.dev/reconciler-test/pkg/environment/execution.go"
+###############################################################################
+# Patch test/e2e-common.sh
+#
+# Upstream sets:
+#
+#   export KO_FLAGS="--platform=linux/amd64"
+#
+# inside test_setup(), which overwrites the PPC64LE setting.
+###############################################################################
 
-if [[ ! -f "${REKT_EXEC}" ]]; then
-  echo "ERROR: ${REKT_EXEC} not found" >&2
-  exit 1
-fi
-
-if grep -q 't\.Parallel()' "${REKT_EXEC}"; then
-  sed -i '/t\.Parallel()/d' "${REKT_EXEC}"
-  echo "Removed t.Parallel() from ${REKT_EXEC}"
-else
-  echo "t.Parallel() is already absent"
-fi
-
-# -------------------------------------------------------------------
-# Trigger dependency ordering fix
-# -------------------------------------------------------------------
-
-echo "Patch Trigger dependency annotation test"
+echo
+echo "Patching ${E2E_COMMON}"
 
 python3 <<'PY'
 from pathlib import Path
+import re
+
+path = Path("test/e2e-common.sh")
+text = path.read_text()
+original = text
+
+# Replace hard-coded amd64 KO_FLAGS assignments.
+text = re.sub(
+    r'^[ \t]*(?:export[ \t]+|readonly[ \t]+)?'
+    r'KO_FLAGS=.*--platform=linux/amd64.*$',
+    'export KO_FLAGS="${KO_FLAGS:---platform=linux/ppc64le}"',
+    text,
+    flags=re.MULTILINE,
+)
+
+# Replace any direct hard-coded amd64 platform usage.
+text = text.replace(
+    "--platform=linux/amd64",
+    "--platform=linux/ppc64le",
+)
+
+if text != original:
+    path.write_text(text)
+    print("Patched test/e2e-common.sh")
+else:
+    print("No hard-coded linux/amd64 KO_FLAGS assignment found")
+PY
+
+###############################################################################
+# Disable parallel reconciler-test environment setup
+#
+# Parallel setup was causing resources and webhooks to be created at the same
+# time on the constrained Power cluster.
+###############################################################################
+
+echo
+echo "Disabling parallel reconciler-test setup"
+
+if grep -q 't\.Parallel()' "${REKT_EXECUTION}"; then
+  sed -i '/t\.Parallel()/d' "${REKT_EXECUTION}"
+  echo "Removed t.Parallel() from ${REKT_EXECUTION}"
+else
+  echo "t.Parallel() is already removed"
+fi
+
+###############################################################################
+# Trigger ordering adjustment
+#
+# Removing t.Parallel() makes steps execute sequentially. The Trigger must not
+# be awaited before its dependent PingSource has been created.
+###############################################################################
+
+if [[ -f "${TRIGGER_FEATURE}" ]]; then
+  echo
+  echo "Patching Trigger dependency ordering"
+
+  python3 <<'PY'
+from pathlib import Path
 
 path = Path("test/rekt/features/trigger/feature.go")
-
-if not path.exists():
-    raise SystemExit(f"ERROR: {path} not found")
-
 text = path.read_text()
 
-marker = "With sequential step execution, install PingSource"
+marker = "PPC64LE sequential Trigger ordering"
 
 if marker in text:
-    print(f"{path} is already patched")
+    print("Trigger ordering patch is already applied")
     raise SystemExit(0)
 
-early_trigger_variants = [
-    """\t// trigger won't go ready until after the pingsource exists, because of the dependency annotation
+blocks = [
+'''\
+\t// trigger won't go ready until after the pingsource exists, because of the dependency annotation
 \tf.Requirement("trigger goes ready", trigger.IsReady(triggerName))
 
-""",
-    """\t// trigger won't go ready until after the pingsource exists, because of the dependency annotation.
+''',
+'''\
+\t// trigger won't go ready until after the pingsource exists, because of the dependency annotation.
 \tf.Requirement("trigger goes ready", trigger.IsReady(triggerName))
 
-""",
+''',
 ]
 
 removed = False
 
-for block in early_trigger_variants:
+for block in blocks:
     if block in text:
         text = text.replace(block, "", 1)
         removed = True
         break
 
 if not removed:
-    raise SystemExit(
-        "ERROR: Could not locate the early 'trigger goes ready' requirement "
-        "in test/rekt/features/trigger/feature.go"
+    print(
+        "Trigger readiness block was not found at the original location; "
+        "the upstream source may already be different"
     )
+    raise SystemExit(0)
 
-ping_ready = (
+needle = (
     '\tf.Requirement("PingSource goes ready", '
     'pingsource.IsReady(psourcename))\n'
 )
 
-replacement = """\tf.Requirement("PingSource goes ready", pingsource.IsReady(psourcename))
+replacement = '''\
+\tf.Requirement("PingSource goes ready", pingsource.IsReady(psourcename))
 
-\t// With sequential step execution, install PingSource before waiting
-\t// for the dependency-annotated Trigger to become ready.
+\t// PPC64LE sequential Trigger ordering:
+\t// The dependency-annotated Trigger can become ready only after its
+\t// PingSource dependency has been created and becomes ready.
 \tf.Requirement("trigger goes ready", trigger.IsReady(triggerName))
-"""
+'''
 
-if ping_ready not in text:
+if needle not in text:
     raise SystemExit(
-        "ERROR: Could not locate the PingSource ready requirement "
-        "in test/rekt/features/trigger/feature.go"
+        "ERROR: PingSource readiness requirement was not found"
     )
 
-text = text.replace(ping_ready, replacement, 1)
-path.write_text(text)
-
-print(f"Patched {path}")
+path.write_text(text.replace(needle, replacement, 1))
+print("Patched Trigger dependency ordering")
 PY
+else
+  echo "WARNING: ${TRIGGER_FEATURE} was not found; skipping Trigger patch"
+fi
 
-# -------------------------------------------------------------------
+###############################################################################
 # Patch test/e2e-rekt-tests.sh
-# -------------------------------------------------------------------
+#
+# Important fixes:
+#
+# 1. SKIP_UPLOAD_TEST_IMAGES must be assigned before e2e-common.sh is sourced.
+#    Assigning it afterward causes:
+#
+#      SKIP_UPLOAD_TEST_IMAGES: readonly variable
+#
+# 2. Set KO_DEFAULTBASEIMAGE before reconciler-test dynamically builds
+#    eventshub.
+#
+# 3. Run rekt sequentially with a larger timeout.
+###############################################################################
 
-echo "Patch test/e2e-rekt-tests.sh"
+echo
+echo "Patching ${REKT_SCRIPT}"
 
 python3 <<'PY'
 from pathlib import Path
 import re
 
 path = Path("test/e2e-rekt-tests.sh")
-
-if not path.exists():
-    raise SystemExit(f"ERROR: {path} not found")
-
 text = path.read_text()
 
-# Remove the original assignment because SKIP_UPLOAD_TEST_IMAGES must
-# be declared before e2e-common.sh is sourced.
+# Remove configuration inserted by an earlier revision of adjust.sh.
 text = re.sub(
-    r'^\s*(?:readonly\s+|export\s+)?SKIP_UPLOAD_TEST_IMAGES=.*\n',
+    r'\n?# BEGIN PPC64LE REKT CONFIGURATION.*?'
+    r'# END PPC64LE REKT CONFIGURATION\n?',
+    '\n',
+    text,
+    flags=re.DOTALL,
+)
+
+# Remove older manually generated image-build blocks if present.
+text = re.sub(
+    r'\n?# BEGIN PPC64LE REKT IMAGE BUILD.*?'
+    r'# END PPC64LE REKT IMAGE BUILD\n?',
+    '\n',
+    text,
+    flags=re.DOTALL,
+)
+
+# Remove all existing SKIP_UPLOAD_TEST_IMAGES assignments.
+# The upstream assignment appears after e2e-common.sh has made it readonly.
+text = re.sub(
+    r'^[ \t]*(?:export[ \t]+|readonly[ \t]+)?'
+    r'SKIP_UPLOAD_TEST_IMAGES=.*\n',
     '',
     text,
     flags=re.MULTILINE,
 )
 
-runtime_marker = "# BEGIN PPC64LE REKT CONFIGURATION"
-
-runtime_configuration = r'''# BEGIN PPC64LE REKT CONFIGURATION
-# These variables must exist in the same process that invokes the tests.
-export SKIP_UPLOAD_TEST_IMAGES="${SKIP_UPLOAD_TEST_IMAGES:-true}"
-export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-3h}"
+configuration = '''\
+# BEGIN PPC64LE REKT CONFIGURATION
+export USER="${USER:-$(whoami)}"
+export SKIP_UPLOAD_TEST_IMAGES="true"
 export KO_DOCKER_REPO="${KO_DOCKER_REPO:-icr.io/upstream-k8s-registry/knative}"
-export KO_FLAGS="${KO_FLAGS:---platform=linux/ppc64le}"
+export KO_FLAGS="--platform=linux/ppc64le"
 export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 export CGO_ENABLED=1
-
-GOPATH_BIN="$(go env GOPATH)/bin"
-export PATH="${HOME}/go/bin:${GOPATH_BIN}:${PATH}"
+export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-3h}"
 # END PPC64LE REKT CONFIGURATION
 
 '''
 
-source_statement = 'source "$(dirname "$0")/e2e-common.sh"\n'
+# Support both:
+#
+#   source "$(dirname "$0")/e2e-common.sh"
+#
+# and:
+#
+#   source "$(dirname "${BASH_SOURCE[0]}")/e2e-common.sh"
+#
+source_pattern = re.compile(
+    r'^(?P<indent>[ \t]*)'
+    r'(?P<statement>'
+    r'(?:source|\.)[ \t]+'
+    r'["\047]?\$\(dirname[^\n]*e2e-common\.sh["\047]?'
+    r')$',
+    flags=re.MULTILINE,
+)
 
-if runtime_marker not in text:
-    if source_statement not in text:
-        raise SystemExit(
-            "ERROR: Could not locate the e2e-common.sh source statement"
-        )
+match = source_pattern.search(text)
 
-    text = text.replace(
-        source_statement,
-        runtime_configuration + source_statement,
-        1,
+if not match:
+    raise SystemExit(
+        "ERROR: Could not find the e2e-common.sh source statement in "
+        "test/e2e-rekt-tests.sh"
     )
 
-image_marker = "# BEGIN PPC64LE REKT IMAGE BUILD"
-
-image_build = r'''
-# BEGIN PPC64LE REKT IMAGE BUILD
-echo "Building and publishing ppc64le reconciler-test images"
-
-REKT_IMAGES_FILE="${REKT_IMAGES_FILE:-${PWD}/rekt-images.yaml}"
-export REKT_IMAGES_FILE
-
-echo "KO_DOCKER_REPO=${KO_DOCKER_REPO}"
-echo "KO_FLAGS=${KO_FLAGS}"
-echo "REKT_IMAGES_FILE=${REKT_IMAGES_FILE}"
-
-EVENTSHUB_IMAGE="$(
-  CGO_ENABLED=0 \
-  KO_DOCKER_REPO="${KO_DOCKER_REPO}" \
-  ko publish \
-    --platform=linux/ppc64le \
-    -B \
-    ./vendor/knative.dev/reconciler-test/cmd/eventshub
-)"
-
-HEARTBEATS_IMAGE="$(
-  CGO_ENABLED=0 \
-  KO_DOCKER_REPO="${KO_DOCKER_REPO}" \
-  ko publish \
-    --platform=linux/ppc64le \
-    -B \
-    ./cmd/heartbeats
-)"
-
-PRINT_IMAGE="$(
-  CGO_ENABLED=0 \
-  KO_DOCKER_REPO="${KO_DOCKER_REPO}" \
-  ko publish \
-    --platform=linux/ppc64le \
-    -B \
-    ./test/test_images/print
-)"
-
-cat >"${REKT_IMAGES_FILE}" <<EOF
-knative.dev/reconciler-test/cmd/eventshub: ${EVENTSHUB_IMAGE}
-knative.dev/eventing/cmd/heartbeats: ${HEARTBEATS_IMAGE}
-knative.dev/eventing/test/test_images/print: ${PRINT_IMAGE}
-EOF
-
-echo "Reconciler-test image mapping:"
-cat "${REKT_IMAGES_FILE}"
-# END PPC64LE REKT IMAGE BUILD
-
-'''
-
-initialize_statement = 'initialize "$@" --num-nodes=4\n'
-
-if image_marker not in text:
-    if initialize_statement not in text:
-        raise SystemExit(
-            "ERROR: Could not locate initialize \"$@\" --num-nodes=4"
-        )
-
-    text = text.replace(
-        initialize_statement,
-        initialize_statement + image_build,
-        1,
-    )
+text = (
+    text[:match.start()]
+    + configuration
+    + match.group(0)
+    + text[match.end():]
+)
 
 skip_regex = (
     "^(TestEventTransformJsonata|"
     "TestIntegrationSinkSupportsAuthZ)"
 )
 
-commands = [
-    (
-        re.compile(
-            r'^go_test_e2e\s+-timeout=1h\s+\./test/rekt\s+'
-            r'\|\|\s+fail_test\s*$',
-            re.MULTILINE,
-        ),
-        (
-            'CGO_ENABLED=1 go_test_e2e '
-            '-parallel=1 '
-            '-timeout="${REKT_TEST_TIMEOUT}" '
-            './test/rekt '
-            f'-skip \'{skip_regex}\' '
-            '-args '
-            '-images.producer.file="${REKT_IMAGES_FILE}" '
-            '|| fail_test'
-        ),
-    ),
-    (
-        re.compile(
-            r'^go_test_e2e\s+-timeout=1h\s+\./test/rekt\s+'
-            r'-run\s+TLS\s+\|\|\s+fail_test\s*$',
-            re.MULTILINE,
-        ),
-        (
-            'CGO_ENABLED=1 go_test_e2e '
-            '-parallel=1 '
-            '-timeout="${REKT_TEST_TIMEOUT}" '
-            './test/rekt '
-            f'-skip \'{skip_regex}\' '
-            '-run TLS '
-            '-args '
-            '-images.producer.file="${REKT_IMAGES_FILE}" '
-            '|| fail_test'
-        ),
-    ),
-    (
-        re.compile(
-            r'^go_test_e2e\s+-timeout=1h\s+\./test/rekt\s+'
-            r'-run\s+"OIDC\|AuthZ"\s+\|\|\s+fail_test\s*$',
-            re.MULTILINE,
-        ),
-        (
-            'CGO_ENABLED=1 go_test_e2e '
-            '-parallel=1 '
-            '-timeout="${REKT_TEST_TIMEOUT}" '
-            './test/rekt '
-            f'-skip \'{skip_regex}\' '
-            '-run "OIDC|AuthZ" '
-            '-args '
-            '-images.producer.file="${REKT_IMAGES_FILE}" '
-            '|| fail_test'
-        ),
-    ),
-]
+main_command = (
+    'CGO_ENABLED=1 go_test_e2e '
+    '-parallel=1 '
+    '-timeout="${REKT_TEST_TIMEOUT}" '
+    './test/rekt '
+    f'-skip \'{skip_regex}\' '
+    '|| fail_test'
+)
 
-for pattern, replacement in commands:
-    updated_text, count = pattern.subn(replacement, text, count=1)
+tls_command = (
+    'CGO_ENABLED=1 go_test_e2e '
+    '-parallel=1 '
+    '-timeout="${REKT_TEST_TIMEOUT}" '
+    './test/rekt '
+    f'-skip \'{skip_regex}\' '
+    '-run TLS '
+    '|| fail_test'
+)
 
-    if count == 1:
-        text = updated_text
-        continue
+auth_command = (
+    'CGO_ENABLED=1 go_test_e2e '
+    '-parallel=1 '
+    '-timeout="${REKT_TEST_TIMEOUT}" '
+    './test/rekt '
+    f'-skip \'{skip_regex}\' '
+    '-run "OIDC|AuthZ" '
+    '|| fail_test'
+)
 
-    # Allow rerunning adjust.sh when the command is already patched.
-    if replacement not in text:
-        raise SystemExit(
-            "ERROR: Could not find or patch expected rekt command:\n"
-            f"{pattern.pattern}"
-        )
+def replace_rekt_command(current, run_type, replacement):
+    lines = current.splitlines()
+    replaced = False
+    output = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if (
+            not replaced
+            and "go_test_e2e" in stripped
+            and "./test/rekt" in stripped
+            and "|| fail_test" in stripped
+        ):
+            has_tls = bool(
+                re.search(r'-run[ =]+["\047]?TLS["\047]?', stripped)
+            )
+            has_auth = bool(
+                re.search(r'OIDC[|\\]AuthZ', stripped)
+                or ('OIDC' in stripped and 'AuthZ' in stripped)
+            )
+
+            matches = (
+                (run_type == "main" and not has_tls and not has_auth)
+                or (run_type == "tls" and has_tls)
+                or (run_type == "auth" and has_auth)
+            )
+
+            if matches:
+                indent = line[:len(line) - len(line.lstrip())]
+                output.append(indent + replacement)
+                replaced = True
+                continue
+
+        output.append(line)
+
+    return "\n".join(output) + (
+        "\n" if current.endswith("\n") else ""
+    ), replaced
+
+text, auth_replaced = replace_rekt_command(
+    text,
+    "auth",
+    auth_command,
+)
+
+text, tls_replaced = replace_rekt_command(
+    text,
+    "tls",
+    tls_command,
+)
+
+text, main_replaced = replace_rekt_command(
+    text,
+    "main",
+    main_command,
+)
+
+# Some upstream versions only have the main rekt invocation.
+if not main_replaced:
+    raise SystemExit(
+        "ERROR: Main ./test/rekt go_test_e2e command was not found"
+    )
+
+if not tls_replaced:
+    print("TLS-specific rekt command was not found; skipping it")
+
+if not auth_replaced:
+    print("OIDC/AuthZ-specific rekt command was not found; skipping it")
+
+# Remove partial image producer file arguments from older patches.
+text = re.sub(
+    r'[ \t]+(?:-args[ \t]+)?'
+    r'-images\.producer\.file='
+    r'(?:"?\$\{?REKT_IMAGES_FILE\}?"?)',
+    '',
+    text,
+)
 
 path.write_text(text)
-print(f"Patched {path}")
+
+print("Patched test/e2e-rekt-tests.sh")
+print(f"Main command patched: {main_replaced}")
+print(f"TLS command patched: {tls_replaced}")
+print(f"OIDC/AuthZ command patched: {auth_replaced}")
 PY
 
-# -------------------------------------------------------------------
-# Validation
-# -------------------------------------------------------------------
+###############################################################################
+# Validate the changes
+#
+# Do not let Prow continue silently when sed/Python patterns fail.
+###############################################################################
 
 echo
-echo "=== Validate patched test script ==="
+echo "Validating patched scripts"
 
-bash -n test/e2e-rekt-tests.sh
+bash -n "${E2E_COMMON}"
+bash -n "${REKT_SCRIPT}"
 
-echo
-echo "Final reconciler-test configuration:"
-grep -nE \
-  'PPC64LE REKT|SKIP_UPLOAD_TEST_IMAGES|REKT_TEST_TIMEOUT|KO_DOCKER_REPO|REKT_IMAGES_FILE|ko publish|go_test_e2e.*test/rekt|images.producer.file' \
-  test/e2e-rekt-tests.sh || true
+skip_count="$(
+  grep -c \
+    '^[[:space:]]*export SKIP_UPLOAD_TEST_IMAGES=' \
+    "${REKT_SCRIPT}" \
+    || true
+)"
 
-echo
-echo "Verify t.Parallel removal:"
-if grep -n 't\.Parallel()' "${REKT_EXEC}"; then
-  echo "ERROR: t.Parallel() still exists in ${REKT_EXEC}" >&2
-  exit 1
-else
-  echo "No t.Parallel() calls remain in ${REKT_EXEC}"
+if [[ "${skip_count}" -ne 1 ]]; then
+  fail \
+    "Expected exactly one SKIP_UPLOAD_TEST_IMAGES assignment; " \
+    "found ${skip_count}"
 fi
 
-echo
-echo "Verify Trigger feature patch:"
-grep -n -A 4 -B 4 \
-  'With sequential step execution' \
-  test/rekt/features/trigger/feature.go
+skip_line="$(
+  grep -n \
+    'export SKIP_UPLOAD_TEST_IMAGES=' \
+    "${REKT_SCRIPT}" \
+    | head -1 \
+    | cut -d: -f1
+)"
+
+source_line="$(
+  grep -n \
+    'e2e-common\.sh' \
+    "${REKT_SCRIPT}" \
+    | head -1 \
+    | cut -d: -f1
+)"
+
+[[ -n "${skip_line}" ]] || \
+  fail "SKIP_UPLOAD_TEST_IMAGES assignment was not found"
+
+[[ -n "${source_line}" ]] || \
+  fail "e2e-common.sh source statement was not found"
+
+if (( skip_line >= source_line )); then
+  fail \
+    "SKIP_UPLOAD_TEST_IMAGES is still assigned after " \
+    "e2e-common.sh is sourced"
+fi
+
+if grep -q -- '--platform=linux/amd64' \
+  "${E2E_COMMON}" "${REKT_SCRIPT}"; then
+  fail "linux/amd64 still exists in the REKT execution path"
+fi
+
+if grep -q 'images\.producer\.file' "${REKT_SCRIPT}"; then
+  fail "An obsolete images.producer.file setting still exists"
+fi
+
+if ! grep -q \
+  'go_test_e2e.*-parallel=1.*REKT_TEST_TIMEOUT.*\./test/rekt' \
+  "${REKT_SCRIPT}"; then
+  fail "The main rekt command was not patched"
+fi
+
+if grep -q \
+  'go_test_e2e[[:space:]]*-timeout=1h[[:space:]]*\./test/rekt' \
+  "${REKT_SCRIPT}"; then
+  fail "The original rekt -timeout=1h command still exists"
+fi
+
+if grep -q 't\.Parallel()' "${REKT_EXECUTION}"; then
+  fail "t.Parallel() still exists in ${REKT_EXECUTION}"
+fi
+
+###############################################################################
+# Print final configuration in the Prow logs
+###############################################################################
 
 echo
-echo "=== Eventing reconciler source code patched successfully ==="
+echo "================ Final REKT configuration ==================="
+
+grep -nE \
+  'PPC64LE REKT|'\
+'SKIP_UPLOAD_TEST_IMAGES|'\
+'KO_DOCKER_REPO|'\
+'KO_FLAGS|'\
+'KO_DEFAULTBASEIMAGE|'\
+'REKT_TEST_TIMEOUT|'\
+'go_test_e2e.*test/rekt' \
+  "${REKT_SCRIPT}" \
+  || true
+
+echo
+echo "================ Architecture configuration ================="
+
+grep -nE \
+  'KO_FLAGS|platform=linux/' \
+  "${E2E_COMMON}" \
+  "${REKT_SCRIPT}" \
+  || true
+
+echo
+echo "============================================================"
+echo "Eventing reconciler REKT adjustments applied successfully"
+echo "============================================================"
