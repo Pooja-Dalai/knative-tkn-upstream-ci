@@ -34,14 +34,8 @@ USER="$(whoami)"
 
 export PLATFORM="${PLATFORM:-linux/ppc64le}"
 
-export KO_DOCKER_REPO="${
-  KO_DOCKER_REPO:-icr.io/upstream-k8s-registry/knative
-}"
-
-export KO_DEFAULTBASEIMAGE="${
-  KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot
-}"
-
+export KO_DOCKER_REPO="${KO_DOCKER_REPO:-icr.io/upstream-k8s-registry/knative}"
+export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-3h}"
 
 export PATH="${HOME}/go/bin:$(go env GOPATH)/bin:${PATH}"
