@@ -95,7 +95,12 @@ fi
 echo "Cluster setup successfully"
 
 # Copy adjustment scripts 
-cp adjust/${KNATIVE_REPO}/${KNATIVE_RELEASE}/* /tmp/
+#cp adjust/${KNATIVE_REPO}/${KNATIVE_RELEASE}/* /tmp/
+if [[ "${EVENTING_RECONCILER:-false}" == "true" ]]; then
+    cp adjust/eventing-reconciler/${KNATIVE_RELEASE}/adjust.sh /tmp/adjust.sh
+else
+    cp adjust/${KNATIVE_REPO}/${KNATIVE_RELEASE}/adjust.sh /tmp/adjust.sh
+fi
 
 chmod +x /tmp/adjust.sh
 
