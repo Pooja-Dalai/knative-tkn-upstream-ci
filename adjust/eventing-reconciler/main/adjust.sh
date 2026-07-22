@@ -29,52 +29,61 @@ fi
 
 python3 <<'PY'
 from pathlib import Path
+import re
 
 path = Path("test/rekt/features/trigger/feature.go")
+
+if not path.exists():
+    print(f"WARNING: {path} does not exist; skipping Trigger ordering patch.")
+    raise SystemExit(0)
+
 text = path.read_text()
 
-old = """\t// trigger won't go ready until after the pingsource exists, because of the dependency annotation
-\tf.Requirement("trigger goes ready", trigger.IsReady(triggerName))
+marker = "PPC64LE: install PingSource before waiting for Trigger"
 
-\tf.Requirement("install pingsource", func(ctx context.Context, t feature.T) {
-\t\tbrokeruri, err := broker.Address(ctx, brokerName)
-\t\tif err != nil {
-\t\t\tt.Error("failed to get address of broker", err)
-\t\t}
-\t\tcfg = []manifest.CfgFn{
-\t\t\tpingsource.WithSchedule("*/1 * * * *"),
-\t\t\tpingsource.WithSink(&duckv1.Destination{URI: brokeruri.URL, CACerts: brokeruri.CACerts}),
-\t\t\tpingsource.WithData("text/plain", "Test trigger-annotation"),
-\t\t}
-\t\tpingsource.Install(psourcename, cfg...)(ctx, t)
-\t})
-\tf.Requirement("PingSource goes ready", pingsource.IsReady(psourcename))
-"""
+if marker in text:
+    print("Trigger dependency ordering is already patched.")
+    raise SystemExit(0)
 
-new = """\t// With sequential step execution, install PingSource before waiting for the trigger.
-\tf.Requirement("install pingsource", func(ctx context.Context, t feature.T) {
-\t\tbrokeruri, err := broker.Address(ctx, brokerName)
-\t\tif err != nil {
-\t\t\tt.Error("failed to get address of broker", err)
-\t\t}
-\t\tcfg := []manifest.CfgFn{
-\t\t\tpingsource.WithSchedule("*/1 * * * *"),
-\t\t\tpingsource.WithSink(&duckv1.Destination{URI: brokeruri.URL, CACerts: brokeruri.CACerts}),
-\t\t\tpingsource.WithData("text/plain", "Test trigger-annotation"),
-\t\t}
-\t\tpingsource.Install(psourcename, cfg...)(ctx, t)
-\t})
-\tf.Requirement("PingSource goes ready", pingsource.IsReady(psourcename))
+trigger_pattern = re.compile(
+    r'(?P<comment>[ \t]*//[^\n]*trigger[^\n]*\n)?'
+    r'(?P<trigger>[ \t]*f\.Requirement\("trigger goes ready",'
+    r'[ \t]*trigger\.IsReady\(triggerName\)\)\n)'
+    r'(?P<space>\n*)'
+    r'(?P<install>'
+    r'[ \t]*f\.Requirement\("install pingsource",'
+    r'[ \t]*func\(ctx context\.Context,[ \t]*t feature\.T\)[ \t]*\{\n'
+    r'.*?'
+    r'[ \t]*\}\)\n'
+    r'[ \t]*f\.Requirement\("PingSource goes ready",'
+    r'[ \t]*pingsource\.IsReady\(psourcename\)\)\n'
+    r')',
+    re.DOTALL,
+)
 
-\tf.Requirement("trigger goes ready", trigger.IsReady(triggerName))
-"""
+match = trigger_pattern.search(text)
 
-if old in text:
-    path.write_text(text.replace(old, new, 1))
-elif "With sequential step execution, install PingSource" in text:
-    pass
-else:
-    raise SystemExit("adjust.sh: could not patch test/rekt/features/trigger/feature.go")
+if not match:
+    print(
+        "WARNING: Current feature.go structure differs from the expected "
+        "version; skipping Trigger ordering patch."
+    )
+    raise SystemExit(0)
+
+install_block = match.group("install")
+
+# Preserve the original cfg assignment. Do not change `cfg =` to `cfg :=`,
+# because cfg may already be declared outside this requirement function.
+replacement = (
+    "\t// PPC64LE: install PingSource before waiting for Trigger.\n"
+    + install_block
+    + '\n\tf.Requirement("trigger goes ready", trigger.IsReady(triggerName))\n'
+)
+
+text = text[:match.start()] + replacement + text[match.end():]
+path.write_text(text)
+
+print("Patched Trigger dependency ordering successfully.")
 PY
 
 echo "Use prebuilt ppc64le reconciler-test images"
