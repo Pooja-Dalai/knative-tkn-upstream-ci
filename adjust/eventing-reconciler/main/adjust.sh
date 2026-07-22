@@ -121,9 +121,7 @@ fi
 # Reconciler-test setup ordering fix
 #
 
-REKT_EXEC="${
-  PWD
-}/vendor/knative.dev/reconciler-test/pkg/environment/execution.go"
+REKT_EXEC="${PWD}/vendor/knative.dev/reconciler-test/pkg/environment/execution.go"
 
 if [[ -f "${REKT_EXEC}" ]]; then
   echo "Removing t.Parallel() from reconciler-test setup execution"
@@ -209,12 +207,7 @@ REKT_IMAGES_FILE="${PWD}/rekt-images.yaml"
 
 echo "Building and pushing eventshub"
 
-EVENTSHUB_IMG="$(
-  CGO_ENABLED=0 ko publish \
-    --platform="${PLATFORM}" \
-    -B \
-    knative.dev/reconciler-test/cmd/eventshub
-)"
+EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/reconciler-test/cmd/eventshub)"
 
 if [[ -z "${EVENTSHUB_IMG}" ]]; then
   echo "ERROR: eventshub image build returned an empty image reference" >&2
@@ -223,12 +216,7 @@ fi
 
 echo "Building and pushing heartbeats"
 
-HEARTBEATS_IMG="$(
-  CGO_ENABLED=0 ko publish \
-    --platform="${PLATFORM}" \
-    -B \
-    knative.dev/eventing/cmd/heartbeats
-)"
+HEARTBEATS_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/cmd/heartbeats)"
 
 if [[ -z "${HEARTBEATS_IMG}" ]]; then
   echo "ERROR: heartbeats image build returned an empty image reference" >&2
@@ -237,12 +225,7 @@ fi
 
 echo "Building and pushing print test image"
 
-PRINT_IMG="$(
-  CGO_ENABLED=0 ko publish \
-    --platform="${PLATFORM}" \
-    -B \
-    knative.dev/eventing/test/test_images/print
-)"
+PRINT_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/test/test_images/print)"
 
 if [[ -z "${PRINT_IMG}" ]]; then
   echo "ERROR: print image build returned an empty image reference" >&2
@@ -285,9 +268,7 @@ fi
 
 export SKIP_UPLOAD_TEST_IMAGES=true
 
-sed -i \
-  '/^[[:space:]]*export SKIP_UPLOAD_TEST_IMAGES="true"[[:space:]]*$/d' \
-  "${REKT_SCRIPT}"
+sed -i '/^[[:space:]]*export SKIP_UPLOAD_TEST_IMAGES="true"[[:space:]]*$/d' "${REKT_SCRIPT}"
 
 #
 # Optional REKT test skips
@@ -329,25 +310,17 @@ echo ">>> REKT package timeout: ${REKT_TEST_TIMEOUT}"
 echo ">>> REKT image mapping: ${REKT_IMAGES_FILE}"
 echo ">>> REKT skip flags: ${REKT_SKIP_FLAGS:-none}"
 
-sed -i \
-  "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -args -images.producer.file=${REKT_IMAGES_FILE} || fail_test#" \
-  "${REKT_SCRIPT}"
+sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -args -images.producer.file=${REKT_IMAGES_FILE} || fail_test#" "${REKT_SCRIPT}"
 
-sed -i \
-  "s#^go_test_e2e -timeout=1h ./test/rekt -run TLS || fail_test\$#go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run TLS -args -images.producer.file=${REKT_IMAGES_FILE} || fail_test#" \
-  "${REKT_SCRIPT}"
+sed -i  "s#^go_test_e2e -timeout=1h ./test/rekt -run TLS || fail_test\$#go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run TLS -args -images.producer.file=${REKT_IMAGES_FILE} || fail_test#" "${REKT_SCRIPT}"
 
-sed -i \
-  "s#^go_test_e2e -timeout=1h ./test/rekt -run \"OIDC|AuthZ\" || fail_test\$#go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run \"OIDC|AuthZ\" -args -images.producer.file=${REKT_IMAGES_FILE} || fail_test#" \
-  "${REKT_SCRIPT}"
+sed -i  "s#^go_test_e2e -timeout=1h ./test/rekt -run \"OIDC|AuthZ\" || fail_test\$#go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run \"OIDC|AuthZ\" -args -images.producer.file=${REKT_IMAGES_FILE} || fail_test#" "${REKT_SCRIPT}"
 
 #
 # Handle other timeout formats if present
 #
 
-sed -i \
-  's|-timeout= |-timeout="${REKT_TEST_TIMEOUT}" |g' \
-  "${REKT_SCRIPT}"
+sed -i 's|-timeout= |-timeout="${REKT_TEST_TIMEOUT}" |g' "${REKT_SCRIPT}"
 
 #
 # Enable CGO only for executing the REKT Go tests.
@@ -355,17 +328,13 @@ sed -i \
 # Do not add the prefix again if adjust.sh is run more than once.
 #
 
-sed -i \
-  '/^CGO_ENABLED=1 go_test_e2e /!s|^\(go_test_e2e .*\)|CGO_ENABLED=1 \1|g' \
-  "${REKT_SCRIPT}"
+sed -i '/^CGO_ENABLED=1 go_test_e2e /!s|^\(go_test_e2e .*\)|CGO_ENABLED=1 \1|g' "${REKT_SCRIPT}"
 
 #
 # Persist test artifacts
 #
 
-export ARTIFACTS="${
-  ARTIFACTS:-/root/evr-artifacts/reconciler-$(date -u +%Y%m%d-%H%M%S)-$$
-}"
+export ARTIFACTS="${ARTIFACTS:-/root/evr-artifacts/reconciler-$(date -u +%Y%m%d-%H%M%S)-$$}"
 
 mkdir -p "${ARTIFACTS}"
 
@@ -390,9 +359,7 @@ echo "============================================================"
 echo "Final REKT test commands"
 echo "============================================================"
 
-grep -nE \
-  'go_test_e2e.*test/rekt|images\.producer\.file|CGO_ENABLED' \
-  "${REKT_SCRIPT}" || true
+grep -nE 'go_test_e2e.*test/rekt|images\.producer\.file|CGO_ENABLED' "${REKT_SCRIPT}" || true
 
 echo "============================================================"
 echo "Source code patched and Power images pushed successfully"
