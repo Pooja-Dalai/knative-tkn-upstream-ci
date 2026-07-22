@@ -1,109 +1,62 @@
 #!/bin/bash
 # ============================================================================
-# BASE VERSION — same tunnel mechanism as your original (kubectl port-forward)
-# but with two fixes:
-#   1. The sed injection into test/e2e-common.sh now only touches the FIRST
-#      match of the anchor line, using the `0,/pattern/{...}` range trick.
-#      Your original `/pattern/a\...` form inserts after EVERY match — if
-#      "setup_ingress_env_vars" appears both as a function def and a call
-#      site, you'd get the post-install-fix call injected twice, in the
-#      wrong place, which can break e2e-common.sh's control flow well before
-#      any test ever runs. That is a strong candidate for the
-#      ImagePullBackOff/kapp-timeout you just hit.
-#   2. Self-healing supervisor for the tunnel (active curl check, not just
-#      "restart if the process died").
+# adjust.sh -- restructured to mirror the s390x (z) team's working script
+# logic as closely as possible, with only the deltas required by our system:
 #
-# Use this to confirm: does the kapp-timeout/ImagePullBackOff go away once
-# the injection is fixed, with everything else unchanged? If yes, it was #1.
-# If it still happens, it's the registry issue we discussed, unrelated to
-# this script, and Option A / Option B (network topology) are moot until
-# that's resolved.
+#   - We do NOT create the namespace, install/patch metrics-server, or
+#     create registry secrets here -- setup-environment.sh already does all
+#     of that before this script runs. Their script does it inline because
+#     their pipeline invokes it standalone, without an equivalent separate
+#     setup step. Copying that part over would be pure redundancy.
+#   - We do NOT docker login / clone knative/serving / set KO_DOCKER_REPO
+#     etc. here -- our pipeline's Prow job decoration already checks out the
+#     repo and this script runs from inside it. Their script does its own
+#     clone because it's a fully standalone step.
+#   - We do NOT export TEST_OPTIONS or call ./test/e2e-tests.sh at the end --
+#     both already live in our serving job yaml, confirmed in an earlier
+#     pass. Their script does both inline because, again, it's the one and
+#     only step in their pipeline.
+#   - Port numbers in the forward (31470/31475) match OUR Kourier NodePort
+#     config and TEST_OPTIONS ingressendpoint, confirmed from our own
+#     cluster's `kubectl get svc kourier` output -- not copied verbatim from
+#     their script, since their NodePort values (30080/30443) come from
+#     their own overlay-s390x.yaml, which is specific to their setup.
+#
+# Everything else below -- the patch sequence, the loopback patch
+# application, and critically the PORT FORWARDING LOGIC -- mirrors their
+# script exactly: same function names, same flat/sequential structure, same
+# restart-on-process-death-only loop (no added active health check). This is
+# intentional: you asked to copy their working logic as-is rather than layer
+# more on top of it.
+#
+# Invocation assumption (confirmed from our own Prow trace log): this script
+# is SOURCED (`. /tmp/adjust.sh`), not executed as its own subprocess. That's
+# what lets the background port-forward loop below stay alive into the same
+# shell that later runs ./test/e2e-tests.sh, exactly like it does for them.
 # ============================================================================
-set -uo pipefail   # NOT -e: many of the kubectl/kill calls are expected to
-                    # fail intermittently and are already guarded with `|| true`
+set -uo pipefail   # NOT -e: several kubectl/kill calls are expected to fail
+                    # intermittently and are already guarded with `|| true`
 
-# --- NEW: mitigate Go module proxy stream resets during the build/install
-# phase. Symptom seen: "stream error: stream ID ...; INTERNAL_ERROR;
-# received from peer" while downloading a module from proxy.golang.org,
-# during `INSTALLING KNATIVE SERVING` (building the kapp tool). This is the
-# same class of mid-stream network reset we've been chasing on the ingress
-# side, just hitting Go's HTTPS module fetches instead of Kourier traffic --
-# further evidence the network path out of this environment is generally
-# unreliable under sustained/multiplexed connections, not just for ingress.
-echo ">>> Forcing HTTP/1.1 for Go's module client (mitigates HTTP/2 stream resets)..."
-export GODEBUG="${GODEBUG:-}http2client=0"
-
-echo ">>> Pre-warming Go module cache with retries (absorbs transient network"
-echo ">>> blips here, before the uninterruptible kapp install step runs)..."
-for i in 1 2 3 4 5; do
-  if go mod download; then
-    echo ">>> go mod download succeeded on attempt ${i}"
-    break
-  fi
-  echo ">>> go mod download failed on attempt ${i}/5, retrying in 10s..." >&2
-  sleep 10
-done
-
-# --- NEW: pre-build kapp/ytt with retries, outside the uninterruptible
-# install step. Your log shows these are fetched via a separate
-# `go run <module>@<version>` invocation (own module resolution, not covered
-# by `go mod download` above), which is exactly where the x/text stream
-# reset happened. Building them here means: if it fails, it just retries in
-# a loop with backoff; if it fails during the real `kapp deploy` later,
-# there's no retry and the whole 30-minute wait-timeout gets burned for
-# nothing. Pin versions to match what your log showed — bump these if your
-# repo's pinned versions differ.
-KAPP_VERSION="${KAPP_VERSION:-v0.60.0}"
-YTT_VERSION="${YTT_VERSION:-v0.48.0}"
-
-prebuild_go_tool() {
-  local module_path="$1"
-  local label="$2"
-  local i
-  for i in 1 2 3 4 5; do
-    if go run "${module_path}" version >/dev/null 2>&1; then
-      echo ">>> ${label} pre-build succeeded on attempt ${i}"
-      return 0
-    fi
-    echo ">>> ${label} pre-build failed on attempt ${i}/5, retrying in 10s..." >&2
-    sleep 10
-  done
-  echo "!!! ${label} pre-build failed after 5 attempts. Proceeding anyway --" >&2
-  echo "!!! the real install step may hit the same network error." >&2
-  return 1
-}
-
-echo ">>> Pre-building kapp (${KAPP_VERSION}) with retries..."
-prebuild_go_tool "github.com/vmware-tanzu/carvel-kapp/cmd/kapp@${KAPP_VERSION}" "kapp"
-
-echo ">>> Pre-building ytt (${YTT_VERSION}) with retries..."
-prebuild_go_tool "carvel.dev/ytt/cmd/ytt@${YTT_VERSION}" "ytt"
-
-# Export USER before test starts
+# ---------------------------------------------------------------------------
+# Standard repo patches (unchanged from our original)
+# ---------------------------------------------------------------------------
 sed -i "/^source.*/a export USER=\$(whoami)" test/e2e-tests.sh
 sed -i "/^initialize.*/a export SHORT=1" test/e2e-tests.sh
 
-# Slow down kapp checks
 sed -i 's/\(.*run_kapp deploy\)\(.*\)/\1 --wait-check-interval=45s --wait-concurrency=1 --wait-timeout=30m\2/' test/e2e-common.sh
-
-# Reduce parallelism
 sed -i "s/^\(parallelism=\).*/\1\"-parallel 1\"/" test/e2e-tests.sh
 
-# Kourier replicas: 2 (cheap insurance; not the primary fix, see prior discussion)
-sed -i 's/\(.*replicas: \).*/\12/' test/config/ytt/ingress/kourier/kourier-replicas.yaml
+# Kourier replicas: 1 -- matched to their value. Earlier we bumped this to 2
+# as a precaution, but since their script also runs with 1 replica and works
+# fine, that precaution wasn't earning its keep; matching them removes an
+# unnecessary difference.
+sed -i 's/\(.*replicas: \).*/\11/' test/config/ytt/ingress/kourier/kourier-replicas.yaml
 
-# --- DIAGNOSTIC: how many times does the injection anchor appear? ---
-# This tells you, before anything else runs, whether the double-insertion
-# risk is real in your current checkout of test/e2e-common.sh.
-ANCHOR_COUNT=$(grep -c "setup_ingress_env_vars" test/e2e-common.sh || true)
-echo ">>> DIAGNOSTIC: 'setup_ingress_env_vars' appears ${ANCHOR_COUNT} time(s) in test/e2e-common.sh"
-if [[ "${ANCHOR_COUNT}" -gt 1 ]]; then
-  echo ">>> DIAGNOSTIC: multiple matches found — using range-restricted sed so"
-  echo ">>> only the FIRST match gets the injection (see below)."
-fi
+# Place overlay
+cp /tmp/overlay-ppc64le.yaml test/config/ytt/core/overlay-ppc64le.yaml
 
-# Apply test patch (loopback fix)
-echo "Applying loopback patch"
+# Apply loopback-skip patch (unchanged from our original)
+echo ">>> Applying loopback patch..."
 PATCH_FILE="/tmp/skip-loopback.patch"
 if [ ! -f "$PATCH_FILE" ]; then
   echo "Patch file not found: $PATCH_FILE"
@@ -111,141 +64,100 @@ if [ ! -f "$PATCH_FILE" ]; then
 fi
 git apply "$PATCH_FILE"
 
-# Post-install script
-cat << 'EOF' > /tmp/post-install-fix.sh
-#!/bin/bash
-set +e
-echo "Starting post-install setup..."
+# ---------------------------------------------------------------------------
+# Post-install cluster fixes -- kept flat (not wrapped in a function) to
+# match their style. These specific steps (kourier-ns wait, gateway wait,
+# webhook HPA cleanup, rollout status waits) predate any of our changes --
+# they were already in our original adjust.sh and are relevant to our
+# multi-node PowerVS cluster (slower to stabilize than their single-node
+# Kind setup), so they're kept rather than dropped for style parity alone.
+# ---------------------------------------------------------------------------
+echo ">>> Running post-install fixes..."
 
 until kubectl get ns kourier-system >/dev/null 2>&1; do
   sleep 2
 done
-
 kubectl wait --for=condition=available deploy/3scale-kourier-gateway -n kourier-system --timeout=180s || true
 
+echo ">>> Cleaning up chaosduck if present..."
 kubectl delete deployment chaosduck -n knative-serving --ignore-not-found || true
+
+echo ">>> Deleting Activator/Webhook HPA to prevent auto-scaling..."
 kubectl delete hpa activator -n knative-serving --ignore-not-found || true
 kubectl delete hpa webhook -n knative-serving --ignore-not-found || true
+# NOTE: kept at 2 (not matched to their replicas=1) -- this predates any of
+# our changes, was already in our original adjust.sh before the tunnel work
+# started, and is unrelated to it. Flagging so it's a visible, intentional
+# choice rather than an accidental leftover.
 kubectl scale deployment activator --replicas=2 -n knative-serving || true
 
 kubectl rollout status deployment/controller -n knative-serving --timeout=300s || true
 kubectl rollout status deployment/autoscaler -n knative-serving --timeout=300s || true
 kubectl rollout status deployment/activator -n knative-serving --timeout=300s || true
 
-echo "Giving system time to stabilize..."
+echo ">>> Giving system time to stabilize..."
 sleep 30
 
-echo ">>> Cleaning up old Kourier port-forwards..."
-if [[ -f /tmp/kourier-portforward.pid ]]; then
-  OLD_PID=$(cat /tmp/kourier-portforward.pid)
-  kill "${OLD_PID}" 2>/dev/null || true
-  sleep 2
-  kill -9 "${OLD_PID}" 2>/dev/null || true
-  rm -f /tmp/kourier-portforward.pid
-fi
-pkill -f "port-forward.*kourier" 2>/dev/null || true
-sleep 2
+# ---------------------------------------------------------------------------
+# PORT FORWARDING FUNCTIONS -- mirrors their logic exactly: restart on
+# process death only, no active health check layered on top.
+# ---------------------------------------------------------------------------
+PF_LOOP_PID=""
 
-echo ">>> Starting Kourier port-forward supervisor (self-healing)..."
-(
-  trap 'exit 0' TERM INT
+cleanup_port_forward() {
+  echo ">>> Cleaning up port forwarding..."
+  if [ -n "$PF_LOOP_PID" ]; then
+    kill "$PF_LOOP_PID" 2>/dev/null || true
+  fi
+  pkill -9 -f "port-forward.*kourier" || true
+}
 
-  HEALTH_INTERVAL=5
-  MAX_FAILS=3
-  FAIL_COUNT=0
+start_robust_port_forward() {
+  local namespace=$1
+  local service=$2
+  shift 2
+  local ports=("$@")
 
-  start_pf() {
-    kubectl get svc kourier -n kourier-system >/dev/null 2>&1 || return 1
-    kubectl port-forward \
-      -n kourier-system \
-      service/kourier \
-      31470:80 \
-      31475:443 \
-      >> /tmp/kourier-pf.log 2>&1 &
-    echo $!
-  }
+  echo ">>> Starting robust port forwarding for service/$service in namespace $namespace..."
 
-  wait_for_svc() {
-    until kubectl get svc kourier -n kourier-system >/dev/null 2>&1; do
+  pkill -9 -f "port-forward.*$service" || true
+
+  (
+    echo ">>> Waiting for service $service in namespace $namespace to exist before forwarding..."
+    while ! kubectl get service "$service" -n "$namespace" >/dev/null 2>&1; do
       sleep 5
     done
-  }
+    echo ">>> Service $service found. Starting port-forward in background (logging to /tmp/port-forward.log)."
 
-  wait_for_svc
-  echo ">>> $(date) starting port-forward" >> /tmp/kourier-pf.log
-  PF_CHILD=$(start_pf)
+    while true; do
+      echo ">>> [$(date)] Launching kubectl port-forward for $service..." >> /tmp/port-forward.log
+      kubectl port-forward -n "$namespace" service/"$service" "${ports[@]}" >> /tmp/port-forward.log 2>&1 &
 
-  while true; do
-    sleep "${HEALTH_INTERVAL}"
+      PF_PID=$!
+      echo ">>> [$(date)] Port forward PID: $PF_PID" >> /tmp/port-forward.log
 
-    if [[ -z "${PF_CHILD}" ]] || ! kill -0 "${PF_CHILD}" 2>/dev/null; then
-      echo ">>> $(date) port-forward process died, restarting" >> /tmp/kourier-pf.log
-      wait_for_svc
-      PF_CHILD=$(start_pf)
-      FAIL_COUNT=0
-      continue
-    fi
+      wait "$PF_PID" || true
 
-    CODE=$(curl -s -o /dev/null -m 3 -w "%{http_code}" http://127.0.0.1:31470/ 2>/dev/null)
-    if [[ "${CODE}" =~ ^[0-9]+$ ]]; then
-      FAIL_COUNT=0
-    else
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-      echo ">>> $(date) health check failed (${FAIL_COUNT}/${MAX_FAILS})" >> /tmp/kourier-pf.log
-    fi
+      echo ">>> [$(date)] Port forward process (PID $PF_PID) died/exited. Restarting in 2 seconds..." >> /tmp/port-forward.log
+      sleep 2
+    done
+  ) &
 
-    if [[ "${FAIL_COUNT}" -ge "${MAX_FAILS}" ]]; then
-      echo ">>> $(date) tunnel unhealthy after ${MAX_FAILS} checks, forcing restart" >> /tmp/kourier-pf.log
-      kill "${PF_CHILD}" 2>/dev/null || true
-      sleep 1
-      kill -9 "${PF_CHILD}" 2>/dev/null || true
-      wait_for_svc
-      PF_CHILD=$(start_pf)
-      FAIL_COUNT=0
-    fi
-  done
-) &
-PF_PID=$!
-echo "${PF_PID}" > /tmp/kourier-portforward.pid
-echo ">>> Port-forward supervisor PID=${PF_PID}"
-EOF
-chmod +x /tmp/post-install-fix.sh
+  PF_LOOP_PID=$!
+  echo ">>> Port forwarding loop started with PID: $PF_LOOP_PID"
+}
 
-# --- FIXED: only insert after the FIRST match of the anchor line ---
-# `0,/pattern/{...}` means: process lines from the start of the file up to
-# (and including) the first line matching /pattern/, and only within that
-# range apply the `a\` (append). Any later occurrence of the same string
-# further down the file is left untouched.
-sed -i '0,/setup_ingress_env_vars/{/setup_ingress_env_vars/a\
-echo ">>> Running post-install fixes..." ; /tmp/post-install-fix.sh
-}' test/e2e-common.sh
+# Trap cleanup on exit
+trap cleanup_port_forward EXIT SIGINT SIGTERM
 
-# --- DIAGNOSTIC: confirm exactly one injection landed ---
-INJECTED_COUNT=$(grep -c "Running post-install fixes" test/e2e-common.sh || true)
-echo ">>> DIAGNOSTIC: post-install-fix injected ${INJECTED_COUNT} time(s) into test/e2e-common.sh"
-if [[ "${INJECTED_COUNT}" -ne 1 ]]; then
-  echo "!!! WARNING: expected exactly 1 injection, found ${INJECTED_COUNT}." >&2
-  echo "!!! Inspect test/e2e-common.sh manually before trusting this run." >&2
-fi
+# Start port forwarding -- ports match OUR Kourier NodePort config
+# (31470/31475), not their literal values.
+start_robust_port_forward "kourier-system" "kourier" "31470:80" "31475:443"
 
-# Cleanup script
-cat <<'EOF' > /tmp/kourier-cleanup.sh
-#!/bin/bash
-set +e
-if [[ -f /tmp/kourier-portforward.pid ]]; then
-  PID=$(cat /tmp/kourier-portforward.pid)
-  kill "${PID}" 2>/dev/null || true
-  sleep 2
-  kill -9 "${PID}" 2>/dev/null || true
-  rm -f /tmp/kourier-portforward.pid
-fi
-pkill -f "port-forward.*kourier" 2>/dev/null || true
-sleep 2
-EOF
-chmod +x /tmp/kourier-cleanup.sh
+# Non-blocking check - the loop above will eventually connect once Kourier
+# is installed by e2e-tests.sh
+echo ">>> Port forwarding started in background. It will connect once Kourier is ready."
 
-sed -i '/(( failed )) && fail_test/i\source /tmp/kourier-cleanup.sh' test/e2e-tests.sh
-sed -i '/^success$/i\source /tmp/kourier-cleanup.sh' test/e2e-tests.sh
-
-# Place overlay
-cp /tmp/overlay-ppc64le.yaml test/config/ytt/core/overlay-ppc64le.yaml
+# NOTE: TEST_OPTIONS (including --ingressendpoint) and the
+# ./test/e2e-tests.sh invocation are both already handled in the serving job
+# yaml elsewhere in our pipeline -- intentionally not duplicated here.
