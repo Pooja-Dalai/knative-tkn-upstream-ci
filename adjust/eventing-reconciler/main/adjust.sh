@@ -38,17 +38,27 @@ export KO_DOCKER_REPO="${KO_DOCKER_REPO:-icr.io/upstream-k8s-registry/knative}"
 
 export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 
-# REKT timeout is limited to two hours.
+# Keep the REKT package timeout at two hours.
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
+
+# Power-compatible JSONata image.
+#
+# Override this through the Prow job environment when a different image
+# or immutable digest should be used.
+export TRANSFORM_JSONATA_IMAGE="${
+  TRANSFORM_JSONATA_IMAGE:-quay.io/pooja-dalai/transform-jsonata:ppc64le
+}"
 
 export PATH="${HOME}/go/bin:$(go env GOPATH)/bin:${PATH}"
 
 #
-# Use the Prow artifact directory when it is already provided.
-# Otherwise, create a local artifact directory.
+# Use Prow's artifact directory when already provided.
 #
 
-export ARTIFACTS="${ARTIFACTS:-/root/evr-artifacts/reconciler-$(date -u +%Y%m%d-%H%M%S)-$$}"
+export ARTIFACTS="${
+  ARTIFACTS:-/root/evr-artifacts/reconciler-$(date -u +%Y%m%d-%H%M%S)-$$
+}"
+
 mkdir -p "${ARTIFACTS}"
 
 echo "USER=${USER}"
@@ -56,26 +66,23 @@ echo "PLATFORM=${PLATFORM}"
 echo "KO_DOCKER_REPO=${KO_DOCKER_REPO}"
 echo "KO_DEFAULTBASEIMAGE=${KO_DEFAULTBASEIMAGE}"
 echo "REKT_TEST_TIMEOUT=${REKT_TEST_TIMEOUT}"
+echo "TRANSFORM_JSONATA_IMAGE=${TRANSFORM_JSONATA_IMAGE}"
 echo "ARTIFACTS=${ARTIFACTS}"
 echo "PATH=${PATH}"
 
-if ! command -v ko >/dev/null 2>&1; then
-  echo "ERROR: ko is not installed or is unavailable in PATH" >&2
-  exit 1
-fi
-
-if ! command -v kubectl >/dev/null 2>&1; then
-  echo "ERROR: kubectl is not installed or is unavailable in PATH" >&2
-  exit 1
-fi
-
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: python3 is not installed or is unavailable in PATH" >&2
-  exit 1
-fi
+for required_command in \
+  go \
+  ko \
+  kubectl \
+  python3; do
+  if ! command -v "${required_command}" >/dev/null 2>&1; then
+    echo "ERROR: ${required_command} is unavailable in PATH" >&2
+    exit 1
+  fi
+done
 
 #
-# Merge conformance tests into the main E2E script
+# Merge conformance tests into the main E2E test script
 #
 
 echo "Merging conformance tests into ${E2E_SCRIPT}"
@@ -214,23 +221,28 @@ elif marker in text:
 else:
     print(
         "WARNING: Could not find the expected Trigger dependency block. "
-        "The upstream file may have changed; continuing without this patch."
+        "Continuing without this patch."
     )
 PY
 
 #
-# Build and push Power REKT images to ICR
+# Build and push Power REKT images
 #
 
 echo "============================================================"
-echo "Building and pushing ppc64le REKT images to ICR"
+echo "Building and pushing ppc64le REKT images"
 echo "============================================================"
 
 REKT_IMAGES_FILE="${PWD}/rekt-images.yaml"
 
 echo "Building and pushing eventshub"
 
-EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/reconciler-test/cmd/eventshub)"
+EVENTSHUB_IMG="$(
+  CGO_ENABLED=0 ko publish \
+    --platform="${PLATFORM}" \
+    -B \
+    knative.dev/reconciler-test/cmd/eventshub
+)"
 
 if [[ -z "${EVENTSHUB_IMG}" ]]; then
   echo "ERROR: eventshub image build returned an empty image reference" >&2
@@ -239,7 +251,12 @@ fi
 
 echo "Building and pushing heartbeats"
 
-HEARTBEATS_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/cmd/heartbeats)"
+HEARTBEATS_IMG="$(
+  CGO_ENABLED=0 ko publish \
+    --platform="${PLATFORM}" \
+    -B \
+    knative.dev/eventing/cmd/heartbeats
+)"
 
 if [[ -z "${HEARTBEATS_IMG}" ]]; then
   echo "ERROR: heartbeats image build returned an empty image reference" >&2
@@ -248,7 +265,12 @@ fi
 
 echo "Building and pushing print test image"
 
-PRINT_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/test/test_images/print)"
+PRINT_IMG="$(
+  CGO_ENABLED=0 ko publish \
+    --platform="${PLATFORM}" \
+    -B \
+    knative.dev/eventing/test/test_images/print
+)"
 
 if [[ -z "${PRINT_IMG}" ]]; then
   echo "ERROR: print image build returned an empty image reference" >&2
@@ -265,7 +287,7 @@ echo "Published print image:"
 echo "${PRINT_IMG}"
 
 #
-# Generate file-producer image mapping
+# Generate REKT file-producer image mapping
 #
 
 cat > "${REKT_IMAGES_FILE}" <<EOF
@@ -283,10 +305,7 @@ if [[ ! -s "${REKT_IMAGES_FILE}" ]]; then
 fi
 
 #
-# Images were already built and pushed above.
-#
-# e2e-common.sh can make SKIP_UPLOAD_TEST_IMAGES readonly, so remove the
-# assignment from e2e-rekt-tests.sh and provide it through the environment.
+# REKT image upload was handled above
 #
 
 export SKIP_UPLOAD_TEST_IMAGES=true
@@ -296,10 +315,192 @@ sed -i \
   "${REKT_SCRIPT}"
 
 #
-# Optional REKT test skips
+# Create the post-install JSONata image patch
+#
+# The upstream nightly transform-jsonata image has no ppc64le manifest.
+# This script changes the Eventing transformation image ConfigMap before
+# the first REKT Go test is executed.
 #
 
-: "${SKIP_JSONATA_REKT_TESTS:=1}"
+cat > /tmp/patch-jsonata-image.sh <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+TRANSFORM_JSONATA_IMAGE='${TRANSFORM_JSONATA_IMAGE}'
+ARTIFACTS='${ARTIFACTS}'
+
+echo "============================================================"
+echo "Applying ppc64le transform-jsonata image"
+echo "Image: \${TRANSFORM_JSONATA_IMAGE}"
+echo "============================================================"
+
+CONFIGMAP_NAME="eventing-transformations-images"
+NAMESPACE="knative-eventing"
+
+CONFIGMAP_FOUND=false
+
+for attempt in \$(seq 1 120); do
+  if kubectl \
+    -n "\${NAMESPACE}" \
+    get configmap "\${CONFIGMAP_NAME}" \
+    >/dev/null 2>&1; then
+    CONFIGMAP_FOUND=true
+    break
+  fi
+
+  if (( attempt % 12 == 0 )); then
+    echo "Waiting for \${NAMESPACE}/\${CONFIGMAP_NAME}: attempt \${attempt}/120"
+  fi
+
+  sleep 5
+done
+
+if [[ "\${CONFIGMAP_FOUND}" != "true" ]]; then
+  echo "ERROR: ConfigMap \${NAMESPACE}/\${CONFIGMAP_NAME} was not created" >&2
+
+  kubectl get configmap -n "\${NAMESPACE}" || true
+  kubectl get pods -n "\${NAMESPACE}" -o wide || true
+
+  exit 1
+fi
+
+echo "Existing JSONata image:"
+
+kubectl \
+  -n "\${NAMESPACE}" \
+  get configmap "\${CONFIGMAP_NAME}" \
+  -o jsonpath='{.data.transform-jsonata}' || true
+
+echo
+
+kubectl \
+  -n "\${NAMESPACE}" \
+  patch configmap "\${CONFIGMAP_NAME}" \
+  --type merge \
+  -p "{\"data\":{\"transform-jsonata\":\"\${TRANSFORM_JSONATA_IMAGE}\"}}"
+
+PATCHED_IMAGE="\$(
+  kubectl \
+    -n "\${NAMESPACE}" \
+    get configmap "\${CONFIGMAP_NAME}" \
+    -o jsonpath='{.data.transform-jsonata}'
+)"
+
+echo "Patched JSONata image: \${PATCHED_IMAGE}"
+
+if [[ "\${PATCHED_IMAGE}" != "\${TRANSFORM_JSONATA_IMAGE}" ]]; then
+  echo "ERROR: JSONata image ConfigMap patch was not applied" >&2
+  exit 1
+fi
+
+#
+# eventing-controller reads the image value from this ConfigMap.
+# Restart it so all controller replicas reload the updated value.
+#
+
+if kubectl \
+  -n "\${NAMESPACE}" \
+  get deployment eventing-controller \
+  >/dev/null 2>&1; then
+
+  echo "Restarting eventing-controller"
+
+  kubectl \
+    -n "\${NAMESPACE}" \
+    rollout restart deployment/eventing-controller
+
+  kubectl \
+    -n "\${NAMESPACE}" \
+    rollout status deployment/eventing-controller \
+    --timeout=10m
+else
+  echo "WARNING: eventing-controller Deployment was not found" >&2
+fi
+
+#
+# Wait for core Eventing Deployments after the controller restart.
+#
+
+echo "Waiting for Knative Eventing Deployments"
+
+kubectl \
+  -n "\${NAMESPACE}" \
+  wait \
+  --for=condition=Available \
+  deployment \
+  --all \
+  --timeout=15m || {
+    echo "ERROR: One or more Eventing Deployments are unavailable" >&2
+
+    kubectl get deployments -n "\${NAMESPACE}" || true
+    kubectl get pods -n "\${NAMESPACE}" -o wide || true
+    kubectl get events -n "\${NAMESPACE}" \
+      --sort-by='.lastTimestamp' |
+      tail -100 || true
+
+    exit 1
+  }
+
+echo "Power-compatible JSONata image configured successfully"
+EOF
+
+chmod +x /tmp/patch-jsonata-image.sh
+
+#
+# Insert the JSONata patch immediately before the first REKT test invocation.
+#
+# At this point e2e-rekt-tests.sh has completed Eventing installation, so the
+# ConfigMap exists and can safely be patched before tests create EventTransform
+# resources.
+#
+
+python3 <<'PY'
+from pathlib import Path
+
+path = Path("test/e2e-rekt-tests.sh")
+text = path.read_text()
+
+marker = "# PPC64LE_JSONATA_POST_INSTALL_PATCH"
+
+if marker in text:
+    print("JSONata post-install patch is already injected.")
+    raise SystemExit(0)
+
+lines = text.splitlines()
+
+for index, line in enumerate(lines):
+    stripped = line.lstrip()
+
+    if stripped.startswith("go_test_e2e ") or stripped.startswith(
+        "CGO_ENABLED=1 go_test_e2e "
+    ):
+        indentation = line[: len(line) - len(stripped)]
+
+        insertion = [
+            f"{indentation}# PPC64LE_JSONATA_POST_INSTALL_PATCH",
+            f"{indentation}/tmp/patch-jsonata-image.sh",
+            "",
+        ]
+
+        lines[index:index] = insertion
+        path.write_text("\n".join(lines) + "\n")
+
+        print("Injected JSONata patch before the first REKT test command.")
+        break
+else:
+    raise SystemExit(
+        "ERROR: Could not find a go_test_e2e command in "
+        "test/e2e-rekt-tests.sh"
+    )
+PY
+
+#
+# Optional REKT skips
+#
+# JSONata is enabled because a ppc64le image is now configured.
+#
+
+: "${SKIP_JSONATA_REKT_TESTS:=0}"
 : "${SKIP_INTEGRATIONSINK_AUTHZ_REKT_TESTS:=1}"
 
 REKT_SKIP_PARTS=()
@@ -309,6 +510,9 @@ if [[ "${SKIP_JSONATA_REKT_TESTS}" != "0" ]]; then
 
   echo ">>> Skipping Jsonata REKT tests"
   echo ">>> Set SKIP_JSONATA_REKT_TESTS=0 to enable them"
+else
+  echo ">>> JSONata REKT tests are enabled"
+  echo ">>> Image: ${TRANSFORM_JSONATA_IMAGE}"
 fi
 
 if [[ "${SKIP_INTEGRATIONSINK_AUTHZ_REKT_TESTS}" != "0" ]]; then
@@ -324,7 +528,6 @@ if ((${#REKT_SKIP_PARTS[@]} > 0)); then
   rekt_skip_joined="${REKT_SKIP_PARTS[*]}"
   rekt_skip_joined="${rekt_skip_joined// /|}"
 
-  # Quote the regular expression so Bash does not interpret parentheses.
   REKT_SKIP_FLAGS=" -skip '^(${rekt_skip_joined})'"
 fi
 
@@ -349,9 +552,9 @@ sed -i \
   "${REKT_SCRIPT}"
 
 #
-# Enable CGO only for REKT Go test execution.
+# Enable CGO for REKT Go test execution.
 #
-# Do not add CGO_ENABLED=1 more than once when adjust.sh is rerun.
+# Avoid adding CGO_ENABLED more than once.
 #
 
 sed -i \
@@ -359,263 +562,12 @@ sed -i \
   "${REKT_SCRIPT}"
 
 #
-# Configure persistent Kubernetes API tunnel
-#
-# The attached Prow log showed API calls to the PowerVS master timing out
-# during the long REKT execution. The tunnel keeps API traffic on the
-# existing SSH connection to the master.
-#
-
-echo "============================================================"
-echo "Configuring persistent Kubernetes API SSH tunnel"
-echo "============================================================"
-
-KUBECONFIG_PATH="${KUBECONFIG:-}"
-
-if [[ -z "${KUBECONFIG_PATH}" ]]; then
-  echo "ERROR: KUBECONFIG is not set" >&2
-  exit 1
-fi
-
-# KUBECONFIG can technically contain multiple colon-separated files.
-# This Prow job uses one kubeconfig, so use the first entry.
-KUBECONFIG_PATH="${KUBECONFIG_PATH%%:*}"
-
-if [[ ! -f "${KUBECONFIG_PATH}" ]]; then
-  echo "ERROR: Kubeconfig does not exist: ${KUBECONFIG_PATH}" >&2
-  exit 1
-fi
-
-ORIGINAL_API_SERVER="$(
-  kubectl config view \
-    --kubeconfig="${KUBECONFIG_PATH}" \
-    --minify \
-    -o jsonpath='{.clusters[0].cluster.server}'
-)"
-
-if [[ -z "${ORIGINAL_API_SERVER}" ]]; then
-  echo "ERROR: Could not read Kubernetes API server from kubeconfig" >&2
-  exit 1
-fi
-
-MASTER_HOST="$(
-  printf '%s\n' "${ORIGINAL_API_SERVER}" |
-    sed -E 's#https?://([^:/]+).*#\1#'
-)"
-
-MASTER_API_PORT="$(
-  printf '%s\n' "${ORIGINAL_API_SERVER}" |
-    sed -nE 's#https?://[^:/]+:([0-9]+).*#\1#p'
-)"
-
-MASTER_API_PORT="${MASTER_API_PORT:-992}"
-LOCAL_API_PORT="${LOCAL_API_PORT:-1992}"
-SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-/root/.ssh/ssh-key}"
-
-echo "Original API server: ${ORIGINAL_API_SERVER}"
-echo "Master host: ${MASTER_HOST}"
-echo "Master API port: ${MASTER_API_PORT}"
-echo "Local tunnel port: ${LOCAL_API_PORT}"
-echo "SSH private key: ${SSH_PRIVATE_KEY}"
-
-if [[ ! -f "${SSH_PRIVATE_KEY}" ]]; then
-  echo "ERROR: SSH private key is missing: ${SSH_PRIVATE_KEY}" >&2
-  exit 1
-fi
-
-if ! command -v ssh >/dev/null 2>&1; then
-  echo "ERROR: ssh is not installed or unavailable in PATH" >&2
-  exit 1
-fi
-
-#
-# Check the current direct API connection.
-#
-
-if kubectl \
-  --kubeconfig="${KUBECONFIG_PATH}" \
-  --request-timeout=15s \
-  get --raw='/readyz' >/dev/null 2>&1; then
-  echo "Direct Kubernetes API endpoint is currently healthy"
-else
-  echo "WARNING: Direct Kubernetes API endpoint is not healthy" >&2
-fi
-
-#
-# Stop a stale tunnel if adjust.sh is rerun in the same environment.
-#
-
-if [[ -f /tmp/knative-api-tunnel.pid ]]; then
-  OLD_TUNNEL_PID="$(
-    cat /tmp/knative-api-tunnel.pid 2>/dev/null || true
-  )"
-
-  if [[ -n "${OLD_TUNNEL_PID}" ]] &&
-     kill -0 "${OLD_TUNNEL_PID}" 2>/dev/null; then
-    echo "Stopping stale API tunnel PID ${OLD_TUNNEL_PID}"
-    kill "${OLD_TUNNEL_PID}" 2>/dev/null || true
-    wait "${OLD_TUNNEL_PID}" 2>/dev/null || true
-  fi
-
-  rm -f /tmp/knative-api-tunnel.pid
-fi
-
-#
-# Local connection:
-#   127.0.0.1:1992
-#
-# Forwarded connection on the master:
-#   127.0.0.1:992
-#
-
-ssh \
-  -i "${SSH_PRIVATE_KEY}" \
-  -o BatchMode=yes \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -o ServerAliveInterval=15 \
-  -o ServerAliveCountMax=4 \
-  -o TCPKeepAlive=yes \
-  -o ExitOnForwardFailure=yes \
-  -N \
-  -L "${LOCAL_API_PORT}:127.0.0.1:${MASTER_API_PORT}" \
-  "root@${MASTER_HOST}" \
-  >"${ARTIFACTS}/api-tunnel.log" 2>&1 &
-
-API_TUNNEL_PID=$!
-echo "${API_TUNNEL_PID}" > /tmp/knative-api-tunnel.pid
-
-echo "Started Kubernetes API tunnel with PID ${API_TUNNEL_PID}"
-
-#
-# Wait for the local tunnel to become available.
-#
-
-TUNNEL_READY=false
-
-for attempt in $(seq 1 30); do
-  if ! kill -0 "${API_TUNNEL_PID}" 2>/dev/null; then
-    echo "ERROR: Kubernetes API SSH tunnel exited unexpectedly" >&2
-    cat "${ARTIFACTS}/api-tunnel.log" >&2 || true
-    exit 1
-  fi
-
-  if timeout 2 bash -c \
-    "exec 3<>/dev/tcp/127.0.0.1/${LOCAL_API_PORT}" \
-    2>/dev/null; then
-    TUNNEL_READY=true
-    break
-  fi
-
-  echo "Waiting for API tunnel: attempt ${attempt}/30"
-  sleep 2
-done
-
-if [[ "${TUNNEL_READY}" != "true" ]]; then
-  echo "ERROR: Kubernetes API tunnel did not become ready" >&2
-  cat "${ARTIFACTS}/api-tunnel.log" >&2 || true
-  exit 1
-fi
-
-CURRENT_CLUSTER="$(
-  kubectl config view \
-    --kubeconfig="${KUBECONFIG_PATH}" \
-    --minify \
-    -o jsonpath='{.contexts[0].context.cluster}'
-)"
-
-if [[ -z "${CURRENT_CLUSTER}" ]]; then
-  echo "ERROR: Could not determine current kubeconfig cluster" >&2
-  exit 1
-fi
-
-#
-# Connect to the API through localhost while retaining the original
-# master hostname/IP for TLS certificate verification.
-#
-
-kubectl config set-cluster "${CURRENT_CLUSTER}" \
-  --kubeconfig="${KUBECONFIG_PATH}" \
-  --server="https://127.0.0.1:${LOCAL_API_PORT}" \
-  --tls-server-name="${MASTER_HOST}" \
-  >/dev/null
-
-echo "Updated Kubernetes API endpoint:"
-
-kubectl config view \
-  --kubeconfig="${KUBECONFIG_PATH}" \
-  --minify \
-  -o jsonpath='{.clusters[0].cluster.server}'
-
-echo
-
-#
-# Verify the tunneled API connection before running tests.
-#
-
-API_READY=false
-
-for attempt in $(seq 1 10); do
-  if kubectl \
-    --kubeconfig="${KUBECONFIG_PATH}" \
-    --request-timeout=15s \
-    get --raw='/readyz' >/dev/null 2>&1; then
-    API_READY=true
-    echo "Kubernetes API tunnel is healthy"
-    break
-  fi
-
-  echo "API readiness attempt ${attempt}/10 failed"
-  sleep 5
-done
-
-if [[ "${API_READY}" != "true" ]]; then
-  echo "ERROR: Kubernetes API is not reachable through the SSH tunnel" >&2
-  cat "${ARTIFACTS}/api-tunnel.log" >&2 || true
-  exit 1
-fi
-
-#
-# Monitor API connectivity throughout the test run.
-#
-
-API_MONITOR_LOG="${ARTIFACTS}/api-connectivity.log"
-
-(
-  while true; do
-    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-    if kubectl \
-      --kubeconfig="${KUBECONFIG_PATH}" \
-      --request-timeout=10s \
-      get --raw='/readyz' >/dev/null 2>&1; then
-      echo "${timestamp} API_READY tunnel_pid=${API_TUNNEL_PID}"
-    else
-      echo "${timestamp} API_FAILED tunnel_pid=${API_TUNNEL_PID}"
-
-      if kill -0 "${API_TUNNEL_PID}" 2>/dev/null; then
-        echo "${timestamp} SSH_TUNNEL_RUNNING"
-      else
-        echo "${timestamp} SSH_TUNNEL_DEAD"
-      fi
-    fi
-
-    sleep 30
-  done
-) >> "${API_MONITOR_LOG}" 2>&1 &
-
-API_MONITOR_PID=$!
-
-echo "API monitor PID: ${API_MONITOR_PID}"
-echo "API monitor log: ${API_MONITOR_LOG}"
-echo "API tunnel log: ${ARTIFACTS}/api-tunnel.log"
-
-#
 # Validate resulting scripts
 #
 
 bash -n "${E2E_SCRIPT}"
 bash -n "${REKT_SCRIPT}"
+bash -n /tmp/patch-jsonata-image.sh
 
 if ! grep -q 'images\.producer\.file=' "${REKT_SCRIPT}"; then
   echo "ERROR: REKT image mapping was not injected into ${REKT_SCRIPT}" >&2
@@ -627,16 +579,21 @@ if ! grep -q -- '-timeout=2h' "${REKT_SCRIPT}"; then
   exit 1
 fi
 
+if ! grep -q 'PPC64LE_JSONATA_POST_INSTALL_PATCH' "${REKT_SCRIPT}"; then
+  echo "ERROR: JSONata post-install patch was not injected" >&2
+  exit 1
+fi
+
 echo "============================================================"
 echo "Final REKT test commands"
 echo "============================================================"
 
 grep -nE \
-  'go_test_e2e.*test/rekt|images\.producer\.file|CGO_ENABLED' \
+  'PPC64LE_JSONATA|go_test_e2e.*test/rekt|images\.producer\.file|CGO_ENABLED' \
   "${REKT_SCRIPT}" || true
 
 echo "============================================================"
-echo "Source code patched and Power images pushed successfully"
+echo "Adjustments completed successfully"
 echo "REKT timeout: ${REKT_TEST_TIMEOUT}"
-echo "Kubernetes API tunnel PID: ${API_TUNNEL_PID}"
+echo "JSONata image: ${TRANSFORM_JSONATA_IMAGE}"
 echo "============================================================"
