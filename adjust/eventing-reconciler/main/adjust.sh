@@ -15,7 +15,7 @@ echo "Using ppc64le supported Zipkin image"
 sed -i "s|image:.*|image: icr.io/upstream-k8s-registry/knative/openzipkin/zipkin:test|g" test/config/monitoring/monitoring.yaml
 
 echo "Setting REKT timeout"
-export REKT_TEST_TIMEOUT=3h
+export REKT_TEST_TIMEOUT=2h
 
 echo "Removing t.Parallel() from reconciler-test"
 sed -i '/t\.Parallel()/d' vendor/knative.dev/reconciler-test/pkg/environment/execution.go
