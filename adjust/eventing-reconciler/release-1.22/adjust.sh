@@ -150,4 +150,4 @@ sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#CGO_ENABLED=1 go_t
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt -run TLS || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run TLS -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt -run \"OIDC|AuthZ\" || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run \"OIDC|AuthZ\" -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
 
-echo "Adjustments completed successfully
+echo "Adjustments completed successfully"
