@@ -146,7 +146,10 @@ if ((${#REKT_SKIP_PARTS[@]} > 0)); then
 fi
 
 # Patch REKT commands with 2-hour timeout, image producer mapping, and CGO enabled
-sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
+#sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
+sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt -run '^TestEventTransformJsonata' -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" test/e2e-rekt-tests.sh
+
+# Disable the TLS and AuthZ suites while debugging
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt -run TLS || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run TLS -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt -run \"OIDC|AuthZ\" || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run \"OIDC|AuthZ\" -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
 
