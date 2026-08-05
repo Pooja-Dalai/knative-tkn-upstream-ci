@@ -12,22 +12,23 @@ echo "Use ppc64le supported zipkin image"
 sed -i "s|image:.*|image: icr.io/upstream-k8s-registry/knative/openzipkin/zipkin:test|g" test/config/monitoring/monitoring.yaml
 echo "Source code patched successfully"
 
-
-echo "Applying Eventing reconciler adjustments for ppc64le (repo: ${PWD})"
+#Configure required environment variables
 export PLATFORM="${PLATFORM:-linux/ppc64le}"
 export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
-#export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-quay.io/pooja-dalai/transform-jsonata:ppc64le}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 export PATH="${HOME}/go/bin:$(go env GOPATH)/bin:${PATH}"
 export ARTIFACTS="${ARTIFACTS:-/root/evr-artifacts/reconciler-$(date -u +%Y%m%d-%H%M%S)-$$}"
 mkdir -p "${ARTIFACTS}"
 
-
+# Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
+# and ordering issues can occur during environment initialization
 echo "Removing t.Parallel() from reconciler-test setup execution"
 sed -i '/t\.Parallel()/d' "${PWD}/vendor/knative.dev/reconciler-test/pkg/environment/execution.go"
 
-# Trigger and PingSource dependency ordering fix
+# Reorder Trigger and PingSource requirements in the REKT test.
+# TestTriggerDependencyAnnotation listed "trigger goes ready" before "install pingsource"; that only worked
+# when reconciler-test ran Requirement steps in parallel. Reorder to match real dependency order.
 python3 <<'PY'
 from pathlib import Path
 path = Path("test/rekt/features/trigger/feature.go")
@@ -70,7 +71,7 @@ path.write_text(text.replace(old, new, 1))
 print("Patched Trigger and PingSource dependency ordering.")
 PY
 
-# Build and push Power-compatible REKT images
+# Build and push power-compatible REKT images
 echo "Building and pushing ppc64le REKT images"
 EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/reconciler-test/cmd/eventshub)"
 HEARTBEATS_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/cmd/heartbeats)"
@@ -146,9 +147,8 @@ if ((${#REKT_SKIP_PARTS[@]} > 0)); then
   REKT_SKIP_FLAGS=" -skip '^(${rekt_skip_joined})'"
 fi
 
-# Patch REKT commands with 2-hour timeout, image producer mapping, and CGO enabled
+# Patch REKT commands with rekt timeout, image producer mapping, and CGO enabled
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
-#sed -i "s#^go_test_e2e -timeout=1h ./test/rekt || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=1 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt -run '^TestEventTransformJsonata' -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" test/e2e-rekt-tests.sh
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt -run TLS || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run TLS -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
 sed -i "s#^go_test_e2e -timeout=1h ./test/rekt -run \"OIDC|AuthZ\" || fail_test\$#CGO_ENABLED=1 go_test_e2e -parallel=3 -timeout=${REKT_TEST_TIMEOUT} ./test/rekt${REKT_SKIP_FLAGS} -run \"OIDC|AuthZ\" -args -images.producer.file=${PWD}/rekt-images.yaml || fail_test#" "test/e2e-rekt-tests.sh"
 
