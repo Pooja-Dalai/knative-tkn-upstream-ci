@@ -12,14 +12,11 @@ echo "Use ppc64le supported zipkin image"
 sed -i "s|image:.*|image: icr.io/upstream-k8s-registry/knative/openzipkin/zipkin:test|g" test/config/monitoring/monitoring.yaml
 echo "Source code patched successfully"
 
-#Configure required environment variables
+# Configure required environment variables
 export PLATFORM="${PLATFORM:-linux/ppc64le}"
 export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
-export PATH="${HOME}/go/bin:$(go env GOPATH)/bin:${PATH}"
-export ARTIFACTS="${ARTIFACTS:-/root/evr-artifacts/reconciler-$(date -u +%Y%m%d-%H%M%S)-$$}"
-mkdir -p "${ARTIFACTS}"
 
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
 # and ordering issues can occur during environment initialization
@@ -28,7 +25,7 @@ sed -i '/t\.Parallel()/d' "${PWD}/vendor/knative.dev/reconciler-test/pkg/environ
 
 # Reorder Trigger and PingSource requirements in the REKT test.
 # TestTriggerDependencyAnnotation listed "trigger goes ready" before "install pingsource"; that only worked
-# when reconciler-test ran Requirement steps in parallel. Reorder to match real dependency order.
+# when reconciler-test ran Requirement steps in parallel. Reorder to match real dependency order
 python3 <<'PY'
 from pathlib import Path
 path = Path("test/rekt/features/trigger/feature.go")
@@ -72,7 +69,6 @@ print("Patched Trigger and PingSource dependency ordering.")
 PY
 
 # Build and push power-compatible REKT images
-echo "Building and pushing ppc64le REKT images"
 EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/reconciler-test/cmd/eventshub)"
 HEARTBEATS_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/cmd/heartbeats)"
 PRINT_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/eventing/test/test_images/print)"
@@ -82,6 +78,7 @@ echo "Published heartbeats image: ${HEARTBEATS_IMG}"
 echo "Published print image: ${PRINT_IMG}"
 
 # Generate REKT image mapping
+# With -images.producer.file, *every* ko package used during tests must be listed 
 cat > "${PWD}/rekt-images.yaml" <<EOF
 knative.dev/reconciler-test/cmd/eventshub: ${EVENTSHUB_IMG}
 knative.dev/eventing/cmd/heartbeats: ${HEARTBEATS_IMG}
@@ -92,7 +89,7 @@ EOF
 export SKIP_UPLOAD_TEST_IMAGES=true
 sed -i '/^[[:space:]]*export SKIP_UPLOAD_TEST_IMAGES="true"[[:space:]]*$/d' "test/e2e-rekt-tests.sh"
 
-# Create JSONata image patch script, run after the operator installs the ConfigMap
+# Create transform-jsonata image patch script, run after the operator installs the ConfigMap
 cat > /tmp/patch-jsonata-image.sh <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -100,23 +97,21 @@ set -euo pipefail
 NAMESPACE="knative-eventing"
 CONFIGMAP_NAME="eventing-transformations-images"
 
-echo "Applying Power-compatible transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
-
+echo "Applying transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
 until kubectl -n "\${NAMESPACE}" get configmap "\${CONFIGMAP_NAME}" >/dev/null 2>&1; do
   sleep 5
 done
 
 kubectl -n "\${NAMESPACE}" patch configmap "\${CONFIGMAP_NAME}" --type merge -p '{"data":{"transform-jsonata":"${TRANSFORM_JSONATA_IMAGE}"}}'
-
 kubectl -n "\${NAMESPACE}" rollout restart deployment/eventing-controller
 kubectl -n "\${NAMESPACE}" rollout status deployment/eventing-controller --timeout=10m
 kubectl -n "\${NAMESPACE}" wait --for=condition=Available deployment --all --timeout=15m
 
-echo "Power-compatible JSONata image configured successfully"
+echo "transform-jsonata image configured successfully"
 EOF
 chmod +x /tmp/patch-jsonata-image.sh
 
-# Inject JSONata patch before the first REKT test execution
+# Inject transform-jsonata patch before the first REKT test execution
 python3 <<'PY'
 from pathlib import Path
 path = Path("test/e2e-rekt-tests.sh")
@@ -133,6 +128,7 @@ for index, line in enumerate(lines):
 PY
 
 # Configure optional test skips
+# IntegrationSink AuthZ: binary-encoded invalid events sometimes return 204 instead of 403 (structured path passes)
 : "${SKIP_JSONATA_REKT_TESTS:=0}"
 : "${SKIP_INTEGRATIONSINK_AUTHZ_REKT_TESTS:=1}"
 
