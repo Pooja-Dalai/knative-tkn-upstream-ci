@@ -18,32 +18,6 @@ export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debi
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
-# Build and push transform-jsonata image using Buildah (daemonless)
-echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
-
-rm -rf /tmp/eventing-integrations
-git clone https://github.com/knative-extensions/eventing-integrations.git /tmp/eventing-integrations
-
-pushd /tmp/eventing-integrations/transform-jsonata
-
-# Ensure Buildah is available
-if ! command -v buildah >/dev/null 2>&1; then
-    echo "ERROR: buildah is not installed."
-    exit 1
-fi
-
-echo "Using Buildah version:"
-buildah version
-
-# Build image
-buildah bud --format docker -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
-
-# Push image
-buildah push "${TRANSFORM_JSONATA_IMAGE}"
-
-popd
-
-echo "Successfully published ${TRANSFORM_JSONATA_IMAGE}"
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
 # and ordering issues can occur during environment initialization
 echo "Removing t.Parallel() from reconciler-test setup execution"
