@@ -18,6 +18,14 @@ export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debi
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
+# Build and push transform-jsonata image ourselves instead of using the pre-built icr.io one
+echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+git clone https://github.com/knative-extensions/eventing-integrations.git /tmp/eventing-integrations
+pushd /tmp/eventing-integrations/transform-jsonata
+docker build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
+docker push "${TRANSFORM_JSONATA_IMAGE}"
+popd
+
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
 # and ordering issues can occur during environment initialization
 echo "Removing t.Parallel() from reconciler-test setup execution"
