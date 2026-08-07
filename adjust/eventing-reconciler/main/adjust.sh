@@ -19,81 +19,28 @@ export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
 # Build and push transform-jsonata image ourselves instead of using the pre-built icr.io one
+# Wait for the docker-daemon sidecar to actually be listening before using it.
+# The sidecar is a plain container (not a native k8s sidecar with startup
+# ordering), so there's no guarantee dockerd is up yet when this script starts.
+echo "Waiting for Docker daemon (sidecar) to become available..."
+DOCKER_WAIT_TIMEOUT=60
+DOCKER_WAIT_ELAPSED=0
+until docker info >/dev/null 2>&1; do
+  if (( DOCKER_WAIT_ELAPSED >= DOCKER_WAIT_TIMEOUT )); then
+    echo "ERROR: Docker daemon not reachable at ${DOCKER_HOST:-unix:///var/run/docker.sock} after ${DOCKER_WAIT_TIMEOUT}s."
+    echo "Check that the docker-daemon sidecar container started and DOCKER_HOST is set correctly."
+    exit 1
+  fi
+  sleep 2
+  DOCKER_WAIT_ELAPSED=$((DOCKER_WAIT_ELAPSED + 2))
+done
+echo "Docker daemon is ready."
+
 echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
-
-# Pick whatever OCI build tool is actually usable in this CI container.
-# docker requires a running daemon, which Prow/k8s-based CI images often don't ship.
-# podman/buildah are daemonless and are the common fallback; kaniko needs a different
-# invocation entirely (no local build+push, it's a single executor call).
-choose_build_tool() {
-  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    echo "docker"
-  elif command -v podman >/dev/null 2>&1; then
-    echo "podman"
-  elif command -v buildah >/dev/null 2>&1; then
-    echo "buildah"
-  else
-    echo ""
-  fi
-}
-
-BUILD_TOOL="$(choose_build_tool)"
-
-# Nothing usable on PATH and docker daemon is unreachable: try to install podman.
-# This is the standard fix on RHEL/UBI-based CI images (dnf/yum/microdnf), which is
-# what this job runs on given the ubi9 base images used elsewhere. Requires either
-# root or passwordless sudo in the container; if neither is available this is a no-op
-# and we fall through to the error below.
-if [[ -z "${BUILD_TOOL}" ]]; then
-  echo "No build tool found on PATH; attempting to install podman..."
-  SUDO=""
-  if [[ "$(id -u)" -ne 0 ]]; then
-    command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-  fi
-
-  if command -v dnf >/dev/null 2>&1; then
-    ${SUDO} dnf install -y podman || true
-  elif command -v microdnf >/dev/null 2>&1; then
-    ${SUDO} microdnf install -y podman || true
-  elif command -v yum >/dev/null 2>&1; then
-    ${SUDO} yum install -y podman || true
-  elif command -v apt-get >/dev/null 2>&1; then
-    ${SUDO} apt-get update && ${SUDO} apt-get install -y podman || true
-  else
-    echo "No known package manager (dnf/microdnf/yum/apt-get) found on PATH."
-  fi
-
-  BUILD_TOOL="$(choose_build_tool)"
-fi
-
-if [[ -z "${BUILD_TOOL}" ]]; then
-  echo "ERROR: no usable container build tool found, and installing podman failed."
-  echo "This container likely lacks root/sudo, or has no network access to its package repos."
-  echo "Fix by either: (a) baking podman/buildah into the Prow job's base image, or"
-  echo "(b) adding a Docker-in-Docker sidecar to the Prow job's pod spec, or"
-  echo "(c) running the build as a Kaniko Job against the target k8s cluster instead."
-  exit 1
-fi
-echo "Using ${BUILD_TOOL} to build/push transform-jsonata image"
-
 git clone https://github.com/knative-extensions/eventing-integrations.git /tmp/eventing-integrations
 pushd /tmp/eventing-integrations/transform-jsonata
-
-case "${BUILD_TOOL}" in
-  docker)
-    docker build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
-    docker push "${TRANSFORM_JSONATA_IMAGE}"
-    ;;
-  podman)
-    podman build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
-    podman push "${TRANSFORM_JSONATA_IMAGE}"
-    ;;
-  buildah)
-    buildah bud -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
-    buildah push "${TRANSFORM_JSONATA_IMAGE}"
-    ;;
-esac
-
+docker build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
+docker push "${TRANSFORM_JSONATA_IMAGE}"
 popd
 
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
