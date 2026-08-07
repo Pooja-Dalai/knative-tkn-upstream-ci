@@ -25,15 +25,53 @@ echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
 # docker requires a running daemon, which Prow/k8s-based CI images often don't ship.
 # podman/buildah are daemonless and are the common fallback; kaniko needs a different
 # invocation entirely (no local build+push, it's a single executor call).
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  BUILD_TOOL="docker"
-elif command -v podman >/dev/null 2>&1; then
-  BUILD_TOOL="podman"
-elif command -v buildah >/dev/null 2>&1; then
-  BUILD_TOOL="buildah"
-else
-  echo "ERROR: no usable container build tool found (docker daemon unreachable, and no podman/buildah on PATH)."
-  echo "Install/enable one of these in the CI image, or switch this step to kaniko."
+choose_build_tool() {
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    echo "docker"
+  elif command -v podman >/dev/null 2>&1; then
+    echo "podman"
+  elif command -v buildah >/dev/null 2>&1; then
+    echo "buildah"
+  else
+    echo ""
+  fi
+}
+
+BUILD_TOOL="$(choose_build_tool)"
+
+# Nothing usable on PATH and docker daemon is unreachable: try to install podman.
+# This is the standard fix on RHEL/UBI-based CI images (dnf/yum/microdnf), which is
+# what this job runs on given the ubi9 base images used elsewhere. Requires either
+# root or passwordless sudo in the container; if neither is available this is a no-op
+# and we fall through to the error below.
+if [[ -z "${BUILD_TOOL}" ]]; then
+  echo "No build tool found on PATH; attempting to install podman..."
+  SUDO=""
+  if [[ "$(id -u)" -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    ${SUDO} dnf install -y podman || true
+  elif command -v microdnf >/dev/null 2>&1; then
+    ${SUDO} microdnf install -y podman || true
+  elif command -v yum >/dev/null 2>&1; then
+    ${SUDO} yum install -y podman || true
+  elif command -v apt-get >/dev/null 2>&1; then
+    ${SUDO} apt-get update && ${SUDO} apt-get install -y podman || true
+  else
+    echo "No known package manager (dnf/microdnf/yum/apt-get) found on PATH."
+  fi
+
+  BUILD_TOOL="$(choose_build_tool)"
+fi
+
+if [[ -z "${BUILD_TOOL}" ]]; then
+  echo "ERROR: no usable container build tool found, and installing podman failed."
+  echo "This container likely lacks root/sudo, or has no network access to its package repos."
+  echo "Fix by either: (a) baking podman/buildah into the Prow job's base image, or"
+  echo "(b) adding a Docker-in-Docker sidecar to the Prow job's pod spec, or"
+  echo "(c) running the build as a Kaniko Job against the target k8s cluster instead."
   exit 1
 fi
 echo "Using ${BUILD_TOOL} to build/push transform-jsonata image"
