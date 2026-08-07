@@ -18,6 +18,46 @@ export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debi
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
+# Build and push transform-jsonata image ourselves instead of using the pre-built icr.io one
+echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+
+# Pick whatever OCI build tool is actually usable in this CI container.
+# docker requires a running daemon, which Prow/k8s-based CI images often don't ship.
+# podman/buildah are daemonless and are the common fallback; kaniko needs a different
+# invocation entirely (no local build+push, it's a single executor call).
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  BUILD_TOOL="docker"
+elif command -v podman >/dev/null 2>&1; then
+  BUILD_TOOL="podman"
+elif command -v buildah >/dev/null 2>&1; then
+  BUILD_TOOL="buildah"
+else
+  echo "ERROR: no usable container build tool found (docker daemon unreachable, and no podman/buildah on PATH)."
+  echo "Install/enable one of these in the CI image, or switch this step to kaniko."
+  exit 1
+fi
+echo "Using ${BUILD_TOOL} to build/push transform-jsonata image"
+
+git clone https://github.com/knative-extensions/eventing-integrations.git /tmp/eventing-integrations
+pushd /tmp/eventing-integrations/transform-jsonata
+
+case "${BUILD_TOOL}" in
+  docker)
+    docker build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
+    docker push "${TRANSFORM_JSONATA_IMAGE}"
+    ;;
+  podman)
+    podman build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
+    podman push "${TRANSFORM_JSONATA_IMAGE}"
+    ;;
+  buildah)
+    buildah bud -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
+    buildah push "${TRANSFORM_JSONATA_IMAGE}"
+    ;;
+esac
+
+popd
+
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
 # and ordering issues can occur during environment initialization
 echo "Removing t.Parallel() from reconciler-test setup execution"
