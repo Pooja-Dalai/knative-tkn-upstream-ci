@@ -23,10 +23,6 @@ export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-r
 
 echo "Installing Buildah if it is not already available"
 
-if ! command -v buildah >/dev/null 2>&1; then
-    dnf install -y buildah
-fi
-
 echo "Buildah version:"
 buildah version
 
