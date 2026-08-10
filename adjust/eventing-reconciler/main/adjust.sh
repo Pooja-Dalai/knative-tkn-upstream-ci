@@ -18,29 +18,34 @@ export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debi
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
-# Build and push transform-jsonata image ourselves instead of using the pre-built icr.io one
-# Wait for the docker-daemon sidecar to actually be listening before using it.
-# The sidecar is a plain container (not a native k8s sidecar with startup
-# ordering), so there's no guarantee dockerd is up yet when this script starts.
-echo "Waiting for Docker daemon (sidecar) to become available..."
-DOCKER_WAIT_TIMEOUT=60
-DOCKER_WAIT_ELAPSED=0
-until docker info >/dev/null 2>&1; do
-  if (( DOCKER_WAIT_ELAPSED >= DOCKER_WAIT_TIMEOUT )); then
-    echo "ERROR: Docker daemon not reachable at ${DOCKER_HOST:-unix:///var/run/docker.sock} after ${DOCKER_WAIT_TIMEOUT}s."
-    echo "Check that the docker-daemon sidecar container started and DOCKER_HOST is set correctly."
-    exit 1
-  fi
-  sleep 2
-  DOCKER_WAIT_ELAPSED=$((DOCKER_WAIT_ELAPSED + 2))
-done
-echo "Docker daemon is ready."
+# Build and push transform-jsonata image at runtime using Buildah.
+# Buildah does not require a Docker daemon.
+
+echo "Installing Buildah if it is not already available"
+
+if ! command -v buildah >/dev/null 2>&1; then
+    dnf install -y buildah
+fi
+
+echo "Buildah version:"
+buildah version
 
 echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+
+rm -rf /tmp/eventing-integrations
 git clone https://github.com/knative-extensions/eventing-integrations.git /tmp/eventing-integrations
+
 pushd /tmp/eventing-integrations/transform-jsonata
-docker build -t "${TRANSFORM_JSONATA_IMAGE}" -f Dockerfile .
-docker push "${TRANSFORM_JSONATA_IMAGE}"
+
+buildah bud \
+    --platform "${PLATFORM}" \
+    --format docker \
+    -t "${TRANSFORM_JSONATA_IMAGE}" \
+    -f Dockerfile \
+    .
+
+buildah push "${TRANSFORM_JSONATA_IMAGE}"
+
 popd
 
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
