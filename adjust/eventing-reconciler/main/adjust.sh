@@ -18,31 +18,53 @@ export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debi
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
-# Build and push transform-jsonata image at runtime using Buildah.
-# Buildah does not require a Docker daemon.
+# Build and push transform-jsonata image using Buildah.
+# Docker daemon is not available in the Prow pod.
 
-echo "Installing Buildah if it is not already available"
+echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+
+if ! command -v buildah >/dev/null 2>&1; then
+    echo "ERROR: Buildah is not available in the Prow pod"
+    exit 1
+fi
+
+if ! command -v runc >/dev/null 2>&1; then
+    echo "ERROR: runc is not available in the Prow pod"
+    exit 1
+fi
+
+BUILD_RUNTIME="$(command -v runc)"
 
 echo "Buildah version:"
 buildah version
 
-echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+echo "Using runtime: ${BUILD_RUNTIME}"
+echo "Building for platform: ${PLATFORM}"
 
 rm -rf /tmp/eventing-integrations
-git clone https://github.com/knative-extensions/eventing-integrations.git /tmp/eventing-integrations
+
+git clone https://github.com/knative-extensions/eventing-integrations.git \
+    /tmp/eventing-integrations
 
 pushd /tmp/eventing-integrations/transform-jsonata
 
 buildah bud \
+    --runtime "${BUILD_RUNTIME}" \
+    --isolation=chroot \
     --platform "${PLATFORM}" \
     --format docker \
     -t "${TRANSFORM_JSONATA_IMAGE}" \
     -f Dockerfile \
     .
 
-buildah push "${TRANSFORM_JSONATA_IMAGE}"
+echo "Pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+
+buildah push \
+    "${TRANSFORM_JSONATA_IMAGE}"
 
 popd
+
+echo "transform-jsonata image built and pushed successfully"
 
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
 # and ordering issues can occur during environment initialization
