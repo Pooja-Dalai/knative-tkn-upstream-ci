@@ -107,27 +107,84 @@ pushd /tmp/eventing-integrations/transform-jsonata
 # NOTE: buildah 1.19.6 does not support the automatic $BUILDPLATFORM build-arg
 # (a newer BuildKit/buildx feature), so it resolves to empty and is silently
 # ignored -- use the HOST_PLATFORM detected above instead.
-sed -i "s|^FROM registry.access.redhat.com/ubi9/nodejs-20 AS builder\$|FROM --platform=${HOST_PLATFORM} registry.access.redhat.com/ubi9/nodejs-20 AS builder|" Dockerfile
-echo "Patched Dockerfile builder stage to use --platform=${HOST_PLATFORM}"
-head -5 Dockerfile
 
-buildah bud \
-    --runtime "${BUILD_RUNTIME}" \
-    --isolation=chroot \
-    --storage-driver vfs \
-    --platform "${PLATFORM}" \
-    --format docker \
-    -t "${TRANSFORM_JSONATA_IMAGE}" \
-    -f Dockerfile \
-    .
+# Build transform-jsonata natively on a ppc64le PowerVS worker.
+#
+# The Prow pod is linux/amd64, so building a ppc64le image here causes
+# npm/node to run through emulation and can result in a segmentation fault.
+# The PowerVS workers created by cluster-setup.sh are ppc64le, so perform
+# the image build directly on one of those workers.
 
-echo "Pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+echo "Building transform-jsonata image natively on a ppc64le PowerVS worker"
 
-buildah --storage-driver vfs push \
-    "${TRANSFORM_JSONATA_IMAGE}"
+if [[ ! -f "${PWD}/HOSTS_IP" ]]; then
+    echo "ERROR: HOSTS_IP file not found"
+    echo "The PowerVS cluster must be created before running adjust.sh"
+    exit 1
+fi
 
-popd
+BUILD_HOST="$(head -n 1 "${PWD}/HOSTS_IP")"
 
+if [[ -z "${BUILD_HOST}" ]]; then
+    echo "ERROR: No PowerVS worker found in HOSTS_IP"
+    exit 1
+fi
+
+echo "Selected PowerVS build worker: ${BUILD_HOST}"
+
+SSH_ARGS=(
+    -i /root/.ssh/ssh-key
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+)
+
+ssh "${SSH_ARGS[@]}" "root@${BUILD_HOST}" 'uname -m' | grep -qx 'ppc64le' || {
+    echo "ERROR: ${BUILD_HOST} is not a ppc64le worker"
+    exit 1
+}
+
+echo "Confirmed ${BUILD_HOST} is ppc64le"
+
+ssh "${SSH_ARGS[@]}" "root@${BUILD_HOST}" "
+    set -e
+
+    echo 'Installing Buildah on PowerVS worker if required'
+
+    if ! command -v buildah >/dev/null 2>&1; then
+        dnf install -y buildah
+    fi
+
+    echo 'Buildah version:'
+    buildah version
+
+    echo 'Removing previous eventing-integrations source'
+    rm -rf /tmp/eventing-integrations
+
+    echo 'Cloning eventing-integrations'
+    git clone https://github.com/knative-extensions/eventing-integrations.git \
+        /tmp/eventing-integrations
+
+    cd /tmp/eventing-integrations/transform-jsonata
+
+    echo 'Building transform-jsonata natively for ppc64le'
+
+    buildah bud \
+        --storage-driver vfs \
+        --platform linux/ppc64le \
+        --format docker \
+        -t '${TRANSFORM_JSONATA_IMAGE}' \
+        -f Dockerfile \
+        .
+
+    echo 'Pushing transform-jsonata image'
+
+    buildah push \
+        --authfile /var/lib/kubelet/config.json \
+        '${TRANSFORM_JSONATA_IMAGE}'
+
+    echo 'transform-jsonata image built and pushed successfully'
+"
 echo "transform-jsonata image built and pushed successfully"
 
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
