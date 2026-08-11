@@ -19,21 +19,45 @@ export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
 # Build and push transform-jsonata image using Buildah.
-# Docker daemon is not available in the Prow pod.
-
+# Docker daemon is not available in the Prow pod (OpenShift/CRI-O, no dockerd on nodes).
 echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
 
 if ! command -v buildah >/dev/null 2>&1; then
-    echo "ERROR: Buildah is not available in the Prow pod"
+    echo "buildah not found, installing..."
+    SUDO=""
+    if [[ "$(id -u)" -ne 0 ]]; then
+        command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        ${SUDO} apt-get update -qq
+        ${SUDO} apt-get install -y -qq buildah
+    elif command -v dnf >/dev/null 2>&1; then
+        ${SUDO} dnf install -y buildah
+    elif command -v microdnf >/dev/null 2>&1; then
+        ${SUDO} microdnf install -y buildah
+    elif command -v yum >/dev/null 2>&1; then
+        ${SUDO} yum install -y buildah
+    else
+        echo "ERROR: no known package manager (apt-get/dnf/microdnf/yum) found to install buildah"
+        exit 1
+    fi
+fi
+
+if ! command -v buildah >/dev/null 2>&1; then
+    echo "ERROR: buildah installation failed or is still not on PATH"
     exit 1
 fi
 
-if ! command -v runc >/dev/null 2>&1; then
-    echo "ERROR: runc is not available in the Prow pod"
+# Don't hardcode runc — buildah's Debian/Ubuntu package pulls in crun by
+# default, not runc. Use whichever OCI runtime is actually present.
+if command -v runc >/dev/null 2>&1; then
+    BUILD_RUNTIME="$(command -v runc)"
+elif command -v crun >/dev/null 2>&1; then
+    BUILD_RUNTIME="$(command -v crun)"
+else
+    echo "ERROR: neither runc nor crun is available for buildah to use"
     exit 1
 fi
-
-BUILD_RUNTIME="$(command -v runc)"
 
 echo "Buildah version:"
 buildah version
@@ -51,6 +75,7 @@ pushd /tmp/eventing-integrations/transform-jsonata
 buildah bud \
     --runtime "${BUILD_RUNTIME}" \
     --isolation=chroot \
+    --storage-driver vfs \
     --platform "${PLATFORM}" \
     --format docker \
     -t "${TRANSFORM_JSONATA_IMAGE}" \
@@ -59,7 +84,7 @@ buildah bud \
 
 echo "Pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
 
-buildah push \
+buildah --storage-driver vfs push \
     "${TRANSFORM_JSONATA_IMAGE}"
 
 popd
