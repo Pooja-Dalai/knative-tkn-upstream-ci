@@ -65,6 +65,31 @@ buildah version
 echo "Using runtime: ${BUILD_RUNTIME}"
 echo "Building for platform: ${PLATFORM}"
 
+# Detect the actual build host architecture rather than assuming it, and
+# print it so it's visible in CI logs for future debugging.
+HOST_ARCH="$(uname -m)"
+echo "Host architecture (uname -m): ${HOST_ARCH}"
+
+case "${HOST_ARCH}" in
+  x86_64)
+    HOST_PLATFORM="linux/amd64"
+    ;;
+  aarch64)
+    HOST_PLATFORM="linux/arm64"
+    ;;
+  ppc64le)
+    HOST_PLATFORM="linux/ppc64le"
+    ;;
+  s390x)
+    HOST_PLATFORM="linux/s390x"
+    ;;
+  *)
+    echo "ERROR: unrecognized host architecture '${HOST_ARCH}', cannot determine native platform"
+    exit 1
+    ;;
+esac
+echo "Host build platform: ${HOST_PLATFORM}"
+
 rm -rf /tmp/eventing-integrations
 
 git clone https://github.com/knative-extensions/eventing-integrations.git \
@@ -78,7 +103,13 @@ pushd /tmp/eventing-integrations/transform-jsonata
 # jsonata's dependencies are pure JS with no native bindings, so node_modules
 # built on the host arch are safe to reuse in the ppc64le final image, which
 # only COPYs files and sets metadata -- no execution needed there.
-sed -i 's|^FROM registry.access.redhat.com/ubi9/nodejs-20 AS builder$|FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi9/nodejs-20 AS builder|' Dockerfile
+#
+# NOTE: buildah 1.19.6 does not support the automatic $BUILDPLATFORM build-arg
+# (a newer BuildKit/buildx feature), so it resolves to empty and is silently
+# ignored -- use the HOST_PLATFORM detected above instead.
+sed -i "s|^FROM registry.access.redhat.com/ubi9/nodejs-20 AS builder\$|FROM --platform=${HOST_PLATFORM} registry.access.redhat.com/ubi9/nodejs-20 AS builder|" Dockerfile
+echo "Patched Dockerfile builder stage to use --platform=${HOST_PLATFORM}"
+head -5 Dockerfile
 
 buildah bud \
     --runtime "${BUILD_RUNTIME}" \
