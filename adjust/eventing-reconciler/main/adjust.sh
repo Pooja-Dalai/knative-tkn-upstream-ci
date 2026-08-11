@@ -18,77 +18,23 @@ export KO_DEFAULTBASEIMAGE="${KO_DEFAULTBASEIMAGE:-gcr.io/distroless/static-debi
 export REKT_TEST_TIMEOUT="${REKT_TEST_TIMEOUT:-2h}"
 export TRANSFORM_JSONATA_IMAGE="${TRANSFORM_JSONATA_IMAGE:-icr.io/upstream-k8s-registry/knative/transform-jsonata:latest}"
 
-# Build and push transform-jsonata image using Buildah.
-# Docker daemon is not available in the Prow pod (OpenShift/CRI-O, no dockerd on nodes).
-echo "Building and pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
+echo "Building transform-jsonata image for ${PLATFORM}"
 
+# Buildah is available in the Prow pod after installation.
 if ! command -v buildah >/dev/null 2>&1; then
     echo "buildah not found, installing..."
-    SUDO=""
-    if [[ "$(id -u)" -ne 0 ]]; then
-        command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-    fi
-    if command -v apt-get >/dev/null 2>&1; then
-        ${SUDO} apt-get update -qq
-        ${SUDO} apt-get install -y -qq buildah
-    elif command -v dnf >/dev/null 2>&1; then
-        ${SUDO} dnf install -y buildah
-    elif command -v microdnf >/dev/null 2>&1; then
-        ${SUDO} microdnf install -y buildah
-    elif command -v yum >/dev/null 2>&1; then
-        ${SUDO} yum install -y buildah
-    else
-        echo "ERROR: no known package manager (apt-get/dnf/microdnf/yum) found to install buildah"
-        exit 1
-    fi
-fi
 
-if ! command -v buildah >/dev/null 2>&1; then
-    echo "ERROR: buildah installation failed or is still not on PATH"
-    exit 1
-fi
-
-# Don't hardcode runc — buildah's Debian/Ubuntu package pulls in crun by
-# default, not runc. Use whichever OCI runtime is actually present.
-if command -v runc >/dev/null 2>&1; then
-    BUILD_RUNTIME="$(command -v runc)"
-elif command -v crun >/dev/null 2>&1; then
-    BUILD_RUNTIME="$(command -v crun)"
-else
-    echo "ERROR: neither runc nor crun is available for buildah to use"
-    exit 1
+    apt-get update -qq
+    apt-get install -y -qq buildah runc
 fi
 
 echo "Buildah version:"
 buildah version
 
+BUILD_RUNTIME="$(command -v runc)"
+
 echo "Using runtime: ${BUILD_RUNTIME}"
-echo "Building for platform: ${PLATFORM}"
-
-# Detect the actual build host architecture rather than assuming it, and
-# print it so it's visible in CI logs for future debugging.
-HOST_ARCH="$(uname -m)"
-echo "Host architecture (uname -m): ${HOST_ARCH}"
-
-case "${HOST_ARCH}" in
-  x86_64)
-    HOST_PLATFORM="linux/amd64"
-    ;;
-  aarch64)
-    HOST_PLATFORM="linux/arm64"
-    ;;
-  ppc64le)
-    HOST_PLATFORM="linux/ppc64le"
-    ;;
-  s390x)
-    HOST_PLATFORM="linux/s390x"
-    ;;
-  *)
-    echo "ERROR: unrecognized host architecture '${HOST_ARCH}', cannot determine native platform"
-    exit 1
-    ;;
-esac
-echo "Host build platform: ${HOST_PLATFORM}"
+echo "Target platform: ${PLATFORM}"
 
 rm -rf /tmp/eventing-integrations
 
@@ -97,94 +43,26 @@ git clone https://github.com/knative-extensions/eventing-integrations.git \
 
 pushd /tmp/eventing-integrations/transform-jsonata
 
-# Run `npm install` natively (on the build host's own architecture) instead
-# of under QEMU emulation for ppc64le. Node's V8 JIT is known to segfault
-# under qemu-user emulation (a long-standing, unresolved upstream issue).
-# jsonata's dependencies are pure JS with no native bindings, so node_modules
-# built on the host arch are safe to reuse in the ppc64le final image, which
-# only COPYs files and sets metadata -- no execution needed there.
-#
-# NOTE: buildah 1.19.6 does not support the automatic $BUILDPLATFORM build-arg
-# (a newer BuildKit/buildx feature), so it resolves to empty and is silently
-# ignored -- use the HOST_PLATFORM detected above instead.
+echo "Building transform-jsonata for ppc64le"
+echo "Dockerfile will NOT be modified"
 
-# Build transform-jsonata natively on a ppc64le PowerVS worker.
-#
-# The Prow pod is linux/amd64, so building a ppc64le image here causes
-# npm/node to run through emulation and can result in a segmentation fault.
-# The PowerVS workers created by cluster-setup.sh are ppc64le, so perform
-# the image build directly on one of those workers.
+buildah bud \
+    --runtime "${BUILD_RUNTIME}" \
+    --isolation=chroot \
+    --storage-driver=vfs \
+    --platform "${PLATFORM}" \
+    --format docker \
+    -t "${TRANSFORM_JSONATA_IMAGE}" \
+    -f Dockerfile \
+    .
 
-echo "Building transform-jsonata image natively on a ppc64le PowerVS worker"
+echo "Pushing transform-jsonata image: ${TRANSFORM_JSONATA_IMAGE}"
 
-if [[ ! -f "${PWD}/HOSTS_IP" ]]; then
-    echo "ERROR: HOSTS_IP file not found"
-    echo "The PowerVS cluster must be created before running adjust.sh"
-    exit 1
-fi
+buildah --storage-driver=vfs push \
+    "${TRANSFORM_JSONATA_IMAGE}"
 
-BUILD_HOST="$(head -n 1 "${PWD}/HOSTS_IP")"
+popd
 
-if [[ -z "${BUILD_HOST}" ]]; then
-    echo "ERROR: No PowerVS worker found in HOSTS_IP"
-    exit 1
-fi
-
-echo "Selected PowerVS build worker: ${BUILD_HOST}"
-
-SSH_ARGS=(
-    -i /root/.ssh/ssh-key
-    -o StrictHostKeyChecking=no
-    -o UserKnownHostsFile=/dev/null
-    -o LogLevel=ERROR
-)
-
-ssh "${SSH_ARGS[@]}" "root@${BUILD_HOST}" 'uname -m' | grep -qx 'ppc64le' || {
-    echo "ERROR: ${BUILD_HOST} is not a ppc64le worker"
-    exit 1
-}
-
-echo "Confirmed ${BUILD_HOST} is ppc64le"
-
-ssh "${SSH_ARGS[@]}" "root@${BUILD_HOST}" "
-    set -e
-
-    echo 'Installing Buildah on PowerVS worker if required'
-
-    if ! command -v buildah >/dev/null 2>&1; then
-        dnf install -y buildah
-    fi
-
-    echo 'Buildah version:'
-    buildah version
-
-    echo 'Removing previous eventing-integrations source'
-    rm -rf /tmp/eventing-integrations
-
-    echo 'Cloning eventing-integrations'
-    git clone https://github.com/knative-extensions/eventing-integrations.git \
-        /tmp/eventing-integrations
-
-    cd /tmp/eventing-integrations/transform-jsonata
-
-    echo 'Building transform-jsonata natively for ppc64le'
-
-    buildah bud \
-        --storage-driver vfs \
-        --platform linux/ppc64le \
-        --format docker \
-        -t '${TRANSFORM_JSONATA_IMAGE}' \
-        -f Dockerfile \
-        .
-
-    echo 'Pushing transform-jsonata image'
-
-    buildah push \
-        --authfile /var/lib/kubelet/config.json \
-        '${TRANSFORM_JSONATA_IMAGE}'
-
-    echo 'transform-jsonata image built and pushed successfully'
-"
 echo "transform-jsonata image built and pushed successfully"
 
 # Remove t.Parallel() from reconciler-test setup execution as running setup sequentially avoids race conditions 
