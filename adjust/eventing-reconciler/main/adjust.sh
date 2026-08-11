@@ -72,6 +72,14 @@ git clone https://github.com/knative-extensions/eventing-integrations.git \
 
 pushd /tmp/eventing-integrations/transform-jsonata
 
+# Run `npm install` natively (on the build host's own architecture) instead
+# of under QEMU emulation for ppc64le. Node's V8 JIT is known to segfault
+# under qemu-user emulation (a long-standing, unresolved upstream issue).
+# jsonata's dependencies are pure JS with no native bindings, so node_modules
+# built on the host arch are safe to reuse in the ppc64le final image, which
+# only COPYs files and sets metadata -- no execution needed there.
+sed -i 's|^FROM registry.access.redhat.com/ubi9/nodejs-20 AS builder$|FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi9/nodejs-20 AS builder|' Dockerfile
+
 buildah bud \
     --runtime "${BUILD_RUNTIME}" \
     --isolation=chroot \
