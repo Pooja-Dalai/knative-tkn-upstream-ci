@@ -6,10 +6,10 @@ index 6be99705f..31d6a2370 100644
              - name: co-config-volume
                mountPath: /opt/strimzi/custom-config/
            env:
-+            name: STRIMZI_KUBERNETES_VERSION
-+            value:
-+               major=K8S_VER_MAJOR
-+               minor=K8S_VER_MINOR
++            - name: STRIMZI_KUBERNETES_VERSION
++              value: |
++                major=K8S_VER_MAJOR
++                minor=K8S_VER_MINOR
              - name: STRIMZI_NAMESPACE
                valueFrom:
                  fieldRef:
