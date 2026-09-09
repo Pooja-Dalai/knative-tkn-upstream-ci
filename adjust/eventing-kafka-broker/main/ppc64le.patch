@@ -1,42 +1,3 @@
-diff --git a/test/config/sacura-sink-source/300-job.yaml b/test/config/sacura-sink-source/300-job.yaml
-index 2cefa2d68..633b08ee6 100644
---- a/test/config/sacura-sink-source/300-job.yaml
-+++ b/test/config/sacura-sink-source/300-job.yaml
-@@ -45,7 +45,7 @@ spec:
- 
-       containers:
-         - name: sacura
--          image: ghcr.io/pierdipi/sacura/sacura-7befbbbc92911c6727467cfbf23af88f
-+          image: icr.io/upstream-k8s-registry/knative/bootstrap/sacura:latest
-           args:
-             - "--config"
-             - "/etc/sacura/sacura.yaml"
-diff --git a/test/config/sacura/300-job.yaml b/test/config/sacura/300-job.yaml
-index e72723bcd..cb3113921 100644
---- a/test/config/sacura/300-job.yaml
-+++ b/test/config/sacura/300-job.yaml
-@@ -37,7 +37,7 @@ spec:
- 
-       containers:
-         - name: sacura
--          image: ghcr.io/pierdipi/sacura/sacura-7befbbbc92911c6727467cfbf23af88f
-+          image: icr.io/upstream-k8s-registry/knative/bootstrap/sacura:latest
-           args:
-             - "--config"
-             - "/etc/sacura/sacura.yaml"
-diff --git a/test/e2e_source/helpers/kafka_helper.go b/test/e2e_source/helpers/kafka_helper.go
-index d2cbc9f9b..73eaf5338 100644
---- a/test/e2e_source/helpers/kafka_helper.go
-+++ b/test/e2e_source/helpers/kafka_helper.go
-@@ -45,7 +45,7 @@ const (
-        strimziUserResource  = "kafkausers"
-        interval             = 3 * time.Second
-        timeout              = 4 * time.Minute
--       kcatImage            = "quay.io/openshift-knative/kcat:1.7.1"
-+       kcatImage            = "icr.io/upstream-k8s-registry/knative/kafkacat:v1.6.0"
- )
- 
- var (
 diff --git a/test/kafka/strimzi-cluster-operator.yaml b/test/kafka/strimzi-cluster-operator.yaml
 index 6be99705f..31d6a2370 100644
 --- a/test/kafka/strimzi-cluster-operator.yaml
@@ -52,6 +13,45 @@ index 6be99705f..31d6a2370 100644
              - name: STRIMZI_NAMESPACE
                valueFrom:
                  fieldRef:
+diff --git a/test/config/sacura-sink-source/300-job.yaml b/test/config/sacura-sink-source/300-job.yaml
+index 2cefa2d68..633b08ee6 100644
+--- a/test/config/sacura-sink-source/300-job.yaml
++++ b/test/config/sacura-sink-source/300-job.yaml
+@@ -45,7 +45,7 @@ spec:
+
+       containers:
+         - name: sacura
+-          image: ghcr.io/pierdipi/sacura/sacura-7befbbbc92911c6727467cfbf23af88f
++          image: icr.io/upstream-k8s-registry/knative/bootstrap/sacura:latest
+           args:
+             - "--config"
+             - "/etc/sacura/sacura.yaml"
+diff --git a/test/config/sacura/300-job.yaml b/test/config/sacura/300-job.yaml
+index e72723bcd..cb3113921 100644
+--- a/test/config/sacura/300-job.yaml
++++ b/test/config/sacura/300-job.yaml
+@@ -37,7 +37,7 @@ spec:
+
+       containers:
+         - name: sacura
+-          image: ghcr.io/pierdipi/sacura/sacura-7befbbbc92911c6727467cfbf23af88f
++          image: icr.io/upstream-k8s-registry/knative/bootstrap/sacura:latest
+           args:
+             - "--config"
+             - "/etc/sacura/sacura.yaml"
+diff --git a/test/e2e_source/helpers/kafka_helper.go b/test/e2e_source/helpers/kafka_helper.go
+index d2cbc9f9b..73eaf5338 100644
+--- a/test/e2e_source/helpers/kafka_helper.go
++++ b/test/e2e_source/helpers/kafka_helper.go
+@@ -45,7 +45,7 @@ const (
+ 	strimziUserResource  = "kafkausers"
+ 	interval             = 3 * time.Second
+ 	timeout              = 4 * time.Minute
+-	kcatImage            = "quay.io/openshift-knative/kcat:1.7.1"
++	kcatImage            = "icr.io/upstream-k8s-registry/knative/kafkacat:v1.6.0"
+ )
+
+ var (
 diff --git a/third_party/keda/keda.yaml b/third_party/keda/keda.yaml
 index d51c4817f..05861ae50 100644
 --- a/third_party/keda/keda.yaml
@@ -83,3 +83,4 @@ index d51c4817f..05861ae50 100644
          imagePullPolicy: Always
          livenessProbe:
            httpGet:
+
