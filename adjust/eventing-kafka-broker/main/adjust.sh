@@ -9,6 +9,9 @@ sed -i "s|K8S_VER_MINOR|$(echo "$K8S_BUILD_VERSION" | sed -E 's/^v([0-9]+)\.([0-
 
 # Remove unsupported --zap-log-level flag for keda-adapter v2.11.2
 sed -i '/--zap-log-level=error/d' third_party/keda/keda.yaml
+
+# Use Maven archive mirror to avoid rate limiting
+sed -i "s|https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip|https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip|" data-plane/.mvn/wrapper/maven-wrapper.properties
+
 git apply /tmp/ppc64le.patch
 echo "Source code patched successfully"
-
