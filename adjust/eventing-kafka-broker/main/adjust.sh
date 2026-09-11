@@ -11,7 +11,7 @@ sed -i "s|K8S_VER_MINOR|$(echo "$K8S_BUILD_VERSION" | sed -E 's/^v([0-9]+)\.([0-
 sed -i '/--zap-log-level=error/d' third_party/keda/keda.yaml
 
 # Use Maven archive mirror to avoid rate limiting
-sed -i "s|https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip|https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip|" data-plane/.mvn/wrapper/maven-wrapper.properties
+#sed -i "s|https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip|https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip|" data-plane/.mvn/wrapper/maven-wrapper.properties
 
 # Add retry handling to data-plane Maven builds to survive transient
 # Maven Central rate limiting (HTTP 429) during dependency resolution
