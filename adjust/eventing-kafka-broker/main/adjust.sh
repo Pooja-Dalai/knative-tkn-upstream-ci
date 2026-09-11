@@ -13,5 +13,9 @@ sed -i '/--zap-log-level=error/d' third_party/keda/keda.yaml
 # Use Maven archive mirror to avoid rate limiting
 sed -i "s|https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip|https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip|" data-plane/.mvn/wrapper/maven-wrapper.properties
 
+# Add retry handling to data-plane Maven builds to survive transient
+# Maven Central rate limiting (HTTP 429) during dependency resolution
+sed -i 's#\./mvnw clean install -DskipTests || fail_test "failed to install data plane"#./mvnw clean install -DskipTests -Dmaven.wagon.http.retryHandler.count=6 --no-transfer-progress || fail_test "failed to install data plane"#g' hack/data-plane.sh
+
 git apply /tmp/ppc64le.patch
 echo "Source code patched successfully"
