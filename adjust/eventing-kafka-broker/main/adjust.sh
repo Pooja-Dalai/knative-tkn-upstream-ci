@@ -37,5 +37,13 @@ cat > "${HOME}/.m2/settings.xml" << 'MVNSETTINGS'
 MVNSETTINGS
 echo "Installed Maven settings.xml with Google GCS Central mirror at ${HOME}/.m2/settings.xml"
 
+#Build eventshub image
+export PLATFORM="${PLATFORM:-linux/ppc64le}"
+EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish \
+  --platform="${PLATFORM}" \
+  -B knative.dev/reconciler-test/cmd/eventshub)"
+
+echo "Eventshub image: ${EVENTSHUB_IMG}"
+
 git apply /tmp/ppc64le.patch
 echo "Source code patched successfully"
