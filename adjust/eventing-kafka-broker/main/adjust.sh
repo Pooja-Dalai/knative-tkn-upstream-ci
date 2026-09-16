@@ -40,7 +40,15 @@ echo "Installed Maven settings.xml with Google GCS Central mirror at ${HOME}/.m2
 # ko's default base (cgr.dev/chainguard/static) has no ppc64le manifest, which
 # breaks reconciler-test's runtime eventshub build on Power. This env var is
 # inherited by that subprocess and fixes it at the source.
-export KO_DEFAULTBASEIMAGE="gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3"
+export KO_DEFAULTBASEIMAGE="gcr.io/distroless/static-debian12:nonroot"
+
+#Build eventshub image
+export PLATFORM="${PLATFORM:-linux/ppc64le}"
+EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish \
+  --platform="${PLATFORM}" \
+  -B knative.dev/reconciler-test/cmd/eventshub)"
+
+echo "Eventshub image: ${EVENTSHUB_IMG}"
 
 git apply /tmp/ppc64le.patch
 echo "Source code patched successfully"
