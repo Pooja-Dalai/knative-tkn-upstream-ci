@@ -13,12 +13,10 @@ sed -i '/--zap-log-level=error/d' third_party/keda/keda.yaml
 # Use Maven archive mirror to avoid rate limiting
 sed -i "s|https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip|https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip|" data-plane/.mvn/wrapper/maven-wrapper.properties
 
-# Add retry handling to data-plane Maven builds to survive transient
-# Maven Central rate limiting (HTTP 429) during dependency resolution
+# Add retry handling to data-plane Maven builds to survive transient Maven Central rate limiting (HTTP 429) during dependency resolution
 sed -i 's#\./mvnw clean install -DskipTests || fail_test "failed to install data plane"#./mvnw clean install -DskipTests -Dmaven.wagon.http.retryHandler.count=6 --no-transfer-progress || fail_test "failed to install data plane"#g' hack/data-plane.sh
 
-# Route Maven Central resolution through Google's GCS mirror to avoid Sonatype's
-# consumption-based rate limiting (HTTP 429) from shared Prow-cluster egress.
+# Route Maven Central resolution through Google's GCS mirror to avoid Sonatype's consumption-based rate limiting (HTTP 429) from shared Prow-cluster egress.
 # See: https://central.sonatype.org/faq/429-error/
 mkdir -p "${HOME}/.m2"
 cat > "${HOME}/.m2/settings.xml" << 'MVNSETTINGS'
@@ -37,17 +35,13 @@ cat > "${HOME}/.m2/settings.xml" << 'MVNSETTINGS'
 MVNSETTINGS
 echo "Installed Maven settings.xml with Google GCS Central mirror at ${HOME}/.m2/settings.xml"
 
-# ko's default base (cgr.dev/chainguard/static) has no ppc64le manifest, which
-# breaks reconciler-test's runtime eventshub build on Power. This env var is
-# inherited by that subprocess and fixes it at the source.
+# ko's default base (cgr.dev/chainguard/static) has no ppc64le manifest.
+# distroless/static-debian12 publishes ppc64le, arm64, amd64, arm, s390x.
 export KO_DEFAULTBASEIMAGE="gcr.io/distroless/static-debian12:nonroot"
 
 #Build eventshub image
 export PLATFORM="${PLATFORM:-linux/ppc64le}"
-EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish \
-  --platform="${PLATFORM}" \
-  -B knative.dev/reconciler-test/cmd/eventshub)"
-
+EVENTSHUB_IMG="$(CGO_ENABLED=0 ko publish --platform="${PLATFORM}" -B knative.dev/reconciler-test/cmd/eventshub)"
 echo "Eventshub image: ${EVENTSHUB_IMG}"
 
 git apply /tmp/ppc64le.patch
